@@ -19,6 +19,9 @@ constexpr const char* kStLinkVid = "0483";
 constexpr const char* kStLinkPid = "374b";
 constexpr uint32_t kBaudRate = 115200;
 constexpr auto kAckTimeout = std::chrono::milliseconds(500);
+// Validade do ultimo ResumeScan. O firmware reenvia o estado a cada ~1 s; 2,5 s
+// tolera a perda de um heartbeat sem deixar a visao liberada com o STM32 mudo.
+constexpr auto kScanStateTimeout = std::chrono::milliseconds(2500);
 constexpr int kMaxRetries = 3;
 
 /**
@@ -38,21 +41,23 @@ public:
             } else if (byte == BYTE_NACK) {
                 m_nackReceived = true;
                 m_cv.notify_all();
-            } else if (byte == CMD_HOST_STOP_SCAN) {
-                // Comando StopScan vindo do STM32: pausa a varredura e responde ACK imediatamente
-                m_scanActive = false;
+            } else if (byte == CMD_HOST_STOP_SCAN || byte == CMD_HOST_RESUME_SCAN) {
+                // Estado de varredura vindo do STM32 (enviado na mudanca e reenviado a cada
+                // ~1 s como heartbeat): atualiza a flag e responde ACK imediatamente
+                const bool active = (byte == CMD_HOST_RESUME_SCAN);
+                const bool changed = (active != m_scanActive) || !m_scanStateKnown;
+                m_scanActive = active;
+                m_scanStateKnown = true;
+                m_lastScanMessage = std::chrono::steady_clock::now();
                 if (m_client) {
                     std::vector<uint8_t> ack = {BYTE_ACK};
                     m_client->send(ack);
-                    std::cout << "[Stm32Bridge] Comando StopScan (0xB0) recebido do STM32. Varredura pausada. ACK (0x06) enviado!" << std::endl;
                 }
-            } else if (byte == CMD_HOST_RESUME_SCAN) {
-                // Comando ResumeScan / RequestScan vindo do STM32: ativa a varredura e responde ACK imediatamente
-                m_scanActive = true;
-                if (m_client) {
-                    std::vector<uint8_t> ack = {BYTE_ACK};
-                    m_client->send(ack);
-                    std::cout << "[Stm32Bridge] Comando ResumeScan/RequestScan (0xB1) recebido do STM32. Varredura ativa. ACK (0x06) enviado!" << std::endl;
+                if (changed) {
+                    std::cout << (active
+                        ? "[Stm32Bridge] ResumeScan (0xB1): esteira em movimento. Varredura ATIVA."
+                        : "[Stm32Bridge] StopScan (0xB0): esteira parada ou servo atuando. Varredura PAUSADA.")
+                              << std::endl;
                 }
             } else {
                 // Bufferização de mensagens ASCII assíncronas do STM32 (ex: [btn]\r\n)
@@ -76,6 +81,7 @@ public:
     void onConnectionClosed() override {
         std::lock_guard<std::mutex> lock(m_mutex);
         m_closed = true;
+        m_scanActive = false; // fail-safe: sem STM32 nao ha permissao para detectar
         m_cv.notify_all();
     }
 
@@ -103,9 +109,17 @@ public:
         return m_closed;
     }
 
+    /**
+     * Fail-safe: so libera a varredura com conexao aberta, ultimo estado = ResumeScan
+     * e esse estado renovado ha menos de kScanStateTimeout (o firmware reenvia a cada
+     * ~1 s). STM32 travado, sem energia ou cabo solto => varredura pausada.
+     */
     bool isScanActive() const {
         std::lock_guard<std::mutex> lock(m_mutex);
-        return m_scanActive;
+        if (m_closed || !m_scanActive) {
+            return false;
+        }
+        return (std::chrono::steady_clock::now() - m_lastScanMessage) < kScanStateTimeout;
     }
 
 private:
@@ -129,6 +143,8 @@ private:
     bool m_nackReceived = false;
     bool m_closed = false;
     bool m_scanActive = false;
+    bool m_scanStateKnown = false;
+    std::chrono::steady_clock::time_point m_lastScanMessage{};
     std::string m_asciiLine;
 };
 
