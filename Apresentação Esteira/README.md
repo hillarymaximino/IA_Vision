@@ -161,12 +161,12 @@ O **Galaxy SDK** é proprietário e não tem pacote: o launcher verifica se ele 
 | Verificar ambiente | CMake, compilador, OpenCV, Galaxy SDK, modelo, porta serial e grupo dialout, com a solução de cada item pendente |
 | Extrair modelo do zip | Copia o `yolo11_formas.onnx` de `../Vision_Geometrica (Cópia).zip` para `visao/models/` |
 | Compilar tudo / só a bridge | `cmake --preset ...` seguido de `cmake --build`, com os caminhos preenchidos na tela |
-| Rodar visão | Executa o `VisionTest` a partir de `visao/`, com `--model`, `--camera-sn` e `--port` |
+| Rodar visão | **Deixa tudo pronto e roda**, em sequência: compila tudo (visão + bridge), compila o firmware, grava o STM32 **só se o firmware mudou** desde a última gravação (compara o SHA-256 do `comEdge.bin`) e abre o `VisionTest` a partir de `visao/`, com `--model`, `--camera-sn` e `--port`. Para no primeiro erro |
 | Terminal da bridge | Abre o `bridge_example`. A caixa de texto embaixo do log envia comandos (`1`, `0`, `v`, `s`, `q`) |
 | Testar handshake com o STM32 | Envia `0xA1` e `0xA0` automaticamente e só dá sucesso se os dois receberem ACK |
 | Fluxo completo | Verificar, instalar o que faltar, compilar tudo e testar o STM32, em sequência. Para no primeiro erro |
 | Compilar firmware | Compila `firmware_stm32/` para ARM (`cmake --preset firmware`) e gera `build/comEdge.elf`, `.bin` e `.hex` |
-| Gravar no STM32 | Compila e grava pelo ST-Link (SWD), verifica e reseta a placa. Usa o primeiro gravador que encontrar: STM32CubeProgrammer, `st-flash` ou OpenOCD |
+| Gravar no STM32 | Compila e grava pelo ST-Link (SWD), verifica e reseta a placa. **Sempre grava**, mesmo sem mudança. Use depois de gravar outro programa pelo CubeIDE, porque o launcher só conhece as gravações que ele mesmo fez. Usa o primeiro gravador que encontrar: STM32CubeProgrammer, `st-flash` ou OpenOCD |
 
 As configurações (caminhos, porta e SN da câmera) ficam salvas entre execuções.
 

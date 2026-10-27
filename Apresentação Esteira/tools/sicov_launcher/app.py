@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import html
 import os
 import shutil
@@ -19,7 +20,7 @@ from PySide6.QtWidgets import (
 
 from . import __version__
 from .checks import CheckResult, LauncherConfig, Scope, blocking_failures, run_all
-from .firmware import append_tools_to_path, find_flasher
+from .firmware import Flasher, append_tools_to_path, find_flasher
 from .installer import GALAXY_HINT, build_plan
 from .project import IS_WINDOWS, MODEL_FILENAME, ProjectLayout, list_serial_ports
 from .runner import Exchange, ExpectScript, LogKind, ProcessRunner, Step
@@ -36,6 +37,9 @@ _BRIDGE_PROMPT = "bridge >"
 _BRIDGE_OK = "Handshake Mútuo Concluído com Sucesso"
 _BRIDGE_FAIL = "Falha no Handshake"
 _BRIDGE_NOT_CONNECTED = "Placa não conectada"
+
+# Chave do QSettings com o SHA-256 do ultimo firmware gravado com sucesso
+_FLASHED_DIGEST_KEY = "firmware_flashed_sha256"
 
 _FLASH_HINT = ("Gravação falhou. Confira: ST-Link no USB e ligado ao SWD da placa (SWDIO, SWCLK, GND); "
                "placa alimentada; nenhuma sessão de debug do STM32CubeIDE aberta. No Linux, após instalar "
@@ -130,7 +134,7 @@ class MainWindow(QMainWindow):
             ("Limpar build", self.clean_build),
         ])
         run_box = self._button_group("3. Executar", [
-            ("Rodar visão (VisionTest)", self.run_vision),
+            ("Rodar visão (compila, grava e roda)", self.run_vision),
             ("Terminal da bridge", self.run_bridge_terminal),
         ])
         firmware_box = self._button_group("5. Firmware STM32", [
@@ -379,9 +383,9 @@ class MainWindow(QMainWindow):
             shutil.rmtree(build_root, ignore_errors=True)
             self._append_log(f"Removido {build_root}", LogKind.SUCCESS)
 
-    def _vision_step(self) -> Step | None:
+    def _vision_step(self, require_built: bool = True) -> Step | None:
         exe = self.layout_.vision_executable()
-        if not exe.exists():
+        if require_built and not exe.exists():
             self._append_log(f"{exe} não existe. Compile primeiro (2. Build).", LogKind.ERROR)
             return None
         cfg = self.config()
@@ -391,14 +395,26 @@ class MainWindow(QMainWindow):
         return Step("Visão (VisionTest)", str(exe), args, self.layout_.visao_dir)
 
     def run_vision(self) -> None:
+        """Deixa tudo pronto e roda: compila tudo, compila o firmware, grava o STM32
+        se o firmware mudou desde a ultima gravacao e abre o VisionTest.
+
+        Rodar sem recompilar ja levou a esteira a usar um executavel antigo; por isso
+        o build faz parte do botao (o CMake so recompila o que mudou)."""
         self._save_settings()
-        if not self._preflight({Scope.MODEL}):
+        scopes = {Scope.BRIDGE, Scope.VISION, Scope.MODEL, Scope.FIRMWARE, Scope.FLASH, Scope.SERIAL}
+        if not self._preflight(scopes):
             return
-        step = self._vision_step()
-        if step:
-            self._append_log("Dica: abra o VisionTest e depois aperte RESET no STM32 (0xB1 do boot).",
-                             LogKind.WARNING)
-            self.runner.run([step])
+        flasher = find_flasher()
+        assert flasher is not None  # garantido pelo preflight (Scope.FLASH)
+
+        steps = self._build_steps(vision=True)
+        steps += self._firmware_build_steps()
+        steps.append(self._flash_step(flasher, only_if_changed=True))
+        vision = self._vision_step(require_built=False)   # o executavel e gerado acima
+        assert vision is not None
+        steps.append(vision)
+        self._append_log("Preparando: compilar tudo → firmware → gravar STM32 (se mudou) → visão.", LogKind.INFO)
+        self.runner.run(steps)
 
     def _bridge_step(self, scripted: bool, require_built: bool = True) -> Step | None:
         exe = self.layout_.bridge_executable()
@@ -456,14 +472,39 @@ class MainWindow(QMainWindow):
             "STM32CubeIDE antes de continuar.")
         if answer != QMessageBox.StandardButton.Yes:
             return
-        elf = self.layout_.firmware_artifact(".elf")
-        binary = self.layout_.firmware_artifact(".bin")
         steps = self._firmware_build_steps()
-        steps.append(Step(f"Gravar no STM32 ({flasher.name})", str(flasher.program),
-                          flasher.command(elf, binary), self.layout_.firmware_dir,
-                          failure_hint=_FLASH_HINT))
-        self._append_log("Após gravar, o STM32 reinicia e envia 0xB1 (varredura liberada).", LogKind.INFO)
+        steps.append(self._flash_step(flasher, only_if_changed=False))
+        self._append_log("Após gravar, o STM32 reinicia e envia o estado da esteira (0xB0/0xB1).", LogKind.INFO)
         self.runner.run(steps)
+
+    # ------------------------------------------------------- gravacao do firmware
+    def _firmware_digest(self) -> str | None:
+        """SHA-256 do comEdge.bin compilado (None se ainda nao existe)."""
+        binary = self.layout_.firmware_artifact(".bin")
+        if not binary.is_file():
+            return None
+        return hashlib.sha256(binary.read_bytes()).hexdigest()
+
+    def _flash_step(self, flasher: Flasher, only_if_changed: bool) -> Step:
+        """Passo de gravacao. Com only_if_changed, so grava se o binario recem-compilado
+        difere do ultimo gravado com sucesso por este launcher."""
+        def changed() -> bool:
+            digest = self._firmware_digest()
+            return digest is None or digest != self.settings.value(_FLASHED_DIGEST_KEY, "")
+
+        def remember() -> None:
+            digest = self._firmware_digest()
+            if digest:
+                self.settings.setValue(_FLASHED_DIGEST_KEY, digest)
+
+        return Step(f"Gravar no STM32 ({flasher.name})", str(flasher.program),
+                    flasher.command(self.layout_.firmware_artifact(".elf"),
+                                    self.layout_.firmware_artifact(".bin")),
+                    self.layout_.firmware_dir,
+                    failure_hint=_FLASH_HINT,
+                    should_run=changed if only_if_changed else None,
+                    skip_message="firmware igual ao último gravado; use 'Gravar no STM32' para forçar",
+                    on_success=remember)
 
     def full_flow(self) -> None:
         """Verifica, instala o que for automatizavel, compila tudo e testa o STM32."""

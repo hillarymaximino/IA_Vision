@@ -5,6 +5,7 @@ from __future__ import annotations
 import codecs
 import re
 import shlex
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -52,6 +53,11 @@ class Step:
     interactive: bool = False               # habilita a caixa de entrada do log
     script: ExpectScript | None = None
     failure_hint: str = ""                  # exibido se este passo falhar
+    # Avaliado na hora de executar (nao ao montar a fila): permite decidir com base
+    # no resultado de passos anteriores, ex: gravar so se o firmware compilado mudou.
+    should_run: Callable[[], bool] | None = None
+    skip_message: str = "nada a fazer"
+    on_success: Callable[[], None] | None = None   # chamado apos terminar com codigo 0
 
 
 class _ScriptState:
@@ -130,6 +136,11 @@ class ProcessRunner(QObject):
             return
 
         step = self._queue.pop(0)
+        if step.should_run is not None and not step.should_run():
+            self.log.emit(f"== {step.title}: pulado ({step.skip_message})", LogKind.INFO)
+            self._start_next()
+            return
+
         self._current = step
         self._decoder.reset()
         self._pending_line = ""
@@ -258,6 +269,8 @@ class ProcessRunner(QObject):
 
         if exit_status == QProcess.ExitStatus.NormalExit and exit_code == 0:
             self.log.emit(f"{step.title}: ok", LogKind.SUCCESS)
+            if step.on_success is not None:
+                step.on_success()
             self._start_next()
         else:
             self._queue.clear()
