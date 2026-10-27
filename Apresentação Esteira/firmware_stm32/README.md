@@ -37,6 +37,29 @@ firmware/
 
 ---
 
+### Build por linha de comando (sem abrir o CubeIDE)
+
+Além do projeto do STM32CubeIDE, a pasta tem um `CMakeLists.txt` com as mesmas opções da
+configuração Debug: Cortex-M4 com FPU hard, `USE_HAL_DRIVER`, `STM32F407xx` e `STM32F407VETX_FLASH.ld`.
+É ele que o launcher (`tools/`) usa no botão **Gravar no STM32**.
+
+```bash
+cmake --preset firmware
+cmake --build --preset firmware
+```
+
+Esses comandos geram `build/comEdge.elf`, `.bin` e `.hex`. Para gravar manualmente, use um destes:
+
+```bash
+STM32_Programmer_CLI -c port=SWD -w build/comEdge.elf -v -rst
+st-flash --reset write build/comEdge.bin 0x08000000
+```
+
+O compilador `arm-none-eabi-gcc` é procurado no PATH. Para usar o que vem com o CubeIDE, passe
+`-DARM_TOOLCHAIN_DIR=<pasta bin do gnu-tools-for-stm32>`. O launcher faz isso sozinho.
+
+---
+
 ## 2. Funcionamento Operacional do Firmware
 
 ### Máquina de Estados e Driver Serial (`UartHandler`)
