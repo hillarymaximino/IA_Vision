@@ -10,7 +10,7 @@
  * \n <b>Projeto:</b> SICOV
  *
  * Executa o YOLO11 (ONNX) em uma thread propria. O Orchestrator submete quadros
- * com Vision_SubmitFrame() e le o resultado mais recente com Vision_GetOverlay().
+ * com Vision_SubmitFrame() e le o resultado mais recente com Vision_GetLatest().
  *
  * @{
  ******************************************************************************/
@@ -22,6 +22,7 @@
  * INCLUDES
  ******************************************************************************/
 #include <opencv2/opencv.hpp>
+#include <cstdint>
 #include <vector>
 #include <string>
 
@@ -36,6 +37,18 @@ struct DetectionResult
     int classId;        /**< Classe conforme data.yaml (0 = Circulo ... 5 = Triangulo). */
     float confidence;   /**< Confianca da classe vencedora. */
     bool isValid;       /**< true se classId pertence ao catalogo treinado. */
+};
+
+/**
+ * @brief Resultado de uma inferencia junto com o quadro exato em que ela rodou.
+ * @note  As caixas so valem para `frame`. Desenhar ou testar a ROI num quadro mais
+ *        novo da camera desloca as caixas em relacao ao objeto com a esteira andando.
+ */
+struct InferenceResult
+{
+    cv::Mat frame;                          /**< Quadro avaliado pela IA (copia). */
+    std::vector<DetectionResult> detections;
+    uint64_t sequence{0};                   /**< Cresce a cada inferencia publicada; 0 = nenhuma. */
 };
 
 /*******************************************************************************
@@ -54,8 +67,11 @@ void Vision_Stop(void);
 /** @brief Entrega uma copia do quadro para a proxima inferencia (descarta o anterior pendente). */
 void Vision_SubmitFrame(const cv::Mat& frame);
 
-/** @brief Copia, de forma thread-safe, as deteccoes da ultima inferencia concluida. */
-void Vision_GetOverlay(std::vector<DetectionResult>& outDetections);
+/**
+ * @brief Copia, de forma thread-safe, a ultima inferencia concluida (quadro + deteccoes).
+ * @return false se ainda nao ha inferencia desde o inicio ou desde o ultimo Vision_Reset().
+ */
+bool Vision_GetLatest(InferenceResult& out);
 
 /**
  * @brief Descarta o quadro pendente, as deteccoes publicadas e o resultado de

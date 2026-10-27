@@ -33,6 +33,7 @@
 #include <opencv2/opencv.hpp>
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -53,6 +54,12 @@ static constexpr int dROI_MAX = 1000;
 /** @brief Identificador da classe Circulo no modelo YOLO (data.yaml). */
 static constexpr int dCLASS_ID_CIRCULO = 0;
 
+/** @brief Inferencias seguidas COM circulo na ROI para enviar 0xA1 (filtra falso positivo isolado). */
+static constexpr int dCONFIRMACOES_ENTRADA = 2;
+
+/** @brief Inferencias seguidas SEM circulo na ROI para enviar 0xA0 (filtra uma inferencia que "pisca"). */
+static constexpr int dCONFIRMACOES_SAIDA = 3;
+
 /*******************************************************************************
  * VARIAVEIS DA ROI E SINAIS DE CONTROLE
  ******************************************************************************/
@@ -60,9 +67,9 @@ static constexpr int dCLASS_ID_CIRCULO = 0;
 /* Em permil (1/1000) do frame, para funcionar em qualquer resolucao de camera.
  * Precisam ser 'int' simples e nao-const: o OpenCV escreve nelas via trackbar. */
 static int gRoiCx = 500;   /**< Centro X da ROI (500 = meio da largura).        */
-static int gRoiCy = 330;   /**< Centro Y da ROI (valor inicial aproximado).     */
-static int gRoiW  = 250;   /**< Largura da ROI (250 = 25% do frame).            */
-static int gRoiH  = 250;   /**< Altura da ROI (250 = 25% do frame).             */
+static int gRoiCy = 260;   /**< Centro Y da ROI (260 = 26% da altura).          */
+static int gRoiW  = 380;   /**< Largura da ROI (380 = 38% do frame).            */
+static int gRoiH  = 380;   /**< Altura da ROI (380 = 38% do frame).             */
 
 /** @brief Sinal global ativo enquanto um CIRCULO e reconhecido na ROI. */
 static std::atomic<bool> gSinalCirculo{false};
@@ -71,6 +78,7 @@ static std::atomic<bool> gSinalCirculo{false};
  * PROTOTIPOS LOCAIS
  ******************************************************************************/
 static cv::Rect ObterEnquadramentoInspecao(const cv::Size& frameSize);
+static cv::Rect DesenharZonaInspecao(cv::Mat& frame);
 static void DesenharDeteccao(cv::Mat& frame, const cv::Rect& box, const std::string& label);
 static void CarregarROI(void);
 static void SalvarROI(void);
@@ -124,14 +132,19 @@ bool Orchestrator_Init(const std::string& modelPath, const std::string& cameraSN
  * @brief  Loop principal de orquestracao e renderizacao do HUD na tela.
  * @return void
  * @details Executa os seguintes passos a cada ciclo:
- * \n 1. Recupera o quadro mais recente da camera industrial e desenha a ROI.
- * \n 2. Se o STM32 pausou a varredura: nao envia o quadro para a IA e reseta o sinal.
- * \n 3. Se a varredura esta ativa: envia o quadro para a IA e coleta as deteccoes.
+ * \n 1. Recupera o quadro mais recente da camera industrial.
+ * \n 2. Se o STM32 pausou a varredura: nao envia o quadro para a IA, reseta o sinal
+ *       e mostra o quadro ao vivo.
+ * \n 3. Se a varredura esta ativa: envia o quadro para a IA e pega a ultima inferencia
+ *       JUNTO com o quadro em que ela rodou. A ROI e o HUD sao desenhados nesse quadro,
+ *       entao a tela mostra exatamente o que foi avaliado (sem caixa "atrasada").
  * \n 4. Avalia cada objeto (so conta se a caixa estiver INTEIRA na zona):
- *       - Vermelho + "CIRCULO": circulo reconhecido, aciona o sinal.
+ *       - Vermelho + "CIRCULO": circulo reconhecido.
  *       - Vermelho + "Nao detectada": anomalia / forma desconhecida.
  *       - Outras formas: so contam em "Na zona", sem desenho.
- * \n 5. Envia 0xA1/0xA0 ao STM32 nas bordas do sinal e atualiza o HUD.
+ * \n 5. A cada inferencia NOVA, atualiza o sinal com histerese: liga apos
+ *       dCONFIRMACOES_ENTRADA inferencias seguidas com circulo e desliga apos
+ *       dCONFIRMACOES_SAIDA seguidas sem. Envia 0xA1/0xA0 nas bordas do sinal.
  * \n Teclas: 's' salva a calibracao da ROI, ESC encerra.
  ******************************************************************************/
 void Orchestrator_Run(void)
@@ -151,26 +164,20 @@ void Orchestrator_Run(void)
     cv::createTrackbar("ROI altura",   dWINDOW_NAME, &gRoiH,  dROI_MAX);
 
     cv::Mat frame;
-    std::vector<DetectionResult> detections;
+    InferenceResult inferencia;
     bool estadoAnteriorSinal = false;
     bool varreduraAnterior = false;
+    uint64_t ultimaSequencia = 0;   // ultima inferencia ja contabilizada no sinal
+    int inferenciasComCirculo = 0;
+    int inferenciasSemCirculo = 0;
 
     std::cout << "[ORCHESTRATOR] Pipeline ativo. 's' = salvar ROI | ESC = finalizar." << std::endl;
 
     while (true)
     {
-        // 1. Obtem o quadro gerado pela camera
+        // 1. Obtem o quadro gerado pela camera (ainda limpo, sem HUD)
         if (Camera_GetFrame(frame))
         {
-            // Copia limpa para a IA, antes de qualquer desenho do HUD
-            const cv::Mat frameIA = frame.clone();
-
-            // Calcula e desenha a moldura da Zona de Inspecao (Amarelo / BGR: 0, 255, 255)
-            cv::Rect roi = ObterEnquadramentoInspecao(frame.size());
-            cv::rectangle(frame, roi, cv::Scalar(0, 255, 255), 2);
-            cv::putText(frame, "ZONA DE INSPECAO", cv::Point(roi.x, std::max(15, roi.y - 10)),
-                        cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 255), 1);
-
             // Permissao do STM32: so com a esteira em movimento. Falso tambem se o STM32
             // estiver desconectado ou sem enviar o estado ha mais de 2,5 s (fail-safe).
             const bool varreduraAtiva = bridge::esta_varredura_ativa();
@@ -180,88 +187,131 @@ void Orchestrator_Run(void)
             if (varreduraAtiva != varreduraAnterior)
             {
                 Vision_Reset();
-                detections.clear();
+                inferenciasComCirculo = 0;
+                inferenciasSemCirculo = 0;
                 varreduraAnterior = varreduraAtiva;
             }
 
-            // 2. Varredura pausada pelo STM32 (esteira parada / servo atuando)
+            // Quadro exibido: ao vivo na pausa; na varredura, o quadro avaliado pela IA
+            cv::Mat tela;
+
             if (!varreduraAtiva)
             {
-                // Se o sinal estava ativo, devolve o pino foundObject para "sem objeto"
+                // 2. Varredura pausada pelo STM32 (esteira parada / servo atuando)
                 if (estadoAnteriorSinal)
                 {
                     std::cout << "[STM32] Varredura pausada. Resetando sinal para SEM OBJETO (0xA0)..." << std::endl;
                     bridge::enviar_sem_objeto();
                     estadoAnteriorSinal = false;
-                    gSinalCirculo = false;
                 }
+                gSinalCirculo = false;
 
-                cv::putText(frame, "PAUSADO: ESTEIRA PARADA (AGUARDANDO 0xB1)", cv::Point(10, 30),
+                tela = frame;
+                DesenharZonaInspecao(tela);
+                cv::putText(tela, "PAUSADO: ESTEIRA PARADA (AGUARDANDO 0xB1)", cv::Point(10, 30),
                             cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 165, 255), 2);
             }
             else
             {
-                // 3. Varredura ATIVA: envia o frame para a IA e busca as deteccoes
-                Vision_SubmitFrame(frameIA);
-                Vision_GetOverlay(detections);
+                // 3. Varredura ATIVA: o quadro limpo vai para a IA
+                Vision_SubmitFrame(frame);
 
-                // 4. Avalia e renderiza as deteccoes
-                int totalNaZona = 0;
-                bool circuloDetectadoNesteCiclo = false;
-
-                for (const auto& det : detections)
+                if (!Vision_GetLatest(inferencia))
                 {
-                    // Caixa degenerada nao e uma deteccao utilizavel
-                    if (det.box.area() <= 0) continue;
+                    // Primeira inferencia apos (re)liberar ainda em andamento: nada a decidir
+                    tela = frame;
+                    DesenharZonaInspecao(tela);
+                    cv::putText(tela, "AGUARDANDO A IA...", cv::Point(10, 30),
+                                cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 255, 255), 2);
+                }
+                else
+                {
+                    // ROI, caixas e decisao no MESMO quadro que a IA avaliou
+                    tela = inferencia.frame;
+                    const cv::Rect roi = DesenharZonaInspecao(tela);
 
-                    // Regra de enquadramento: a caixa INTEIRA precisa estar dentro da ROI
-                    if ((roi & det.box) != det.box) continue;
+                    // 4. Avalia e renderiza as deteccoes
+                    int totalNaZona = 0;
+                    bool circuloNaInferencia = false;
 
-                    if (det.isValid && det.classId == dCLASS_ID_CIRCULO)
+                    for (const auto& det : inferencia.detections)
                     {
-                        circuloDetectadoNesteCiclo = true;
-                        DesenharDeteccao(frame, det.box, "CIRCULO");
+                        // Caixa degenerada nao e uma deteccao utilizavel
+                        if (det.box.area() <= 0) continue;
+
+                        // Regra de enquadramento: a caixa INTEIRA precisa estar dentro da ROI
+                        if ((roi & det.box) != det.box) continue;
+
+                        if (det.isValid && det.classId == dCLASS_ID_CIRCULO)
+                        {
+                            circuloNaInferencia = true;
+                            DesenharDeteccao(tela, det.box, "CIRCULO");
+                        }
+                        else if (!det.isValid)
+                        {
+                            DesenharDeteccao(tela, det.box, "Nao detectada");
+                        }
+
+                        totalNaZona++;
                     }
-                    else if (!det.isValid)
+
+                    // 5. Histerese: conta so inferencias NOVAS (a mesma inferencia e
+                    //    reaproveitada em varios quadros da camera enquanto a IA trabalha)
+                    if (inferencia.sequence != ultimaSequencia)
                     {
-                        DesenharDeteccao(frame, det.box, "Nao detectada");
+                        ultimaSequencia = inferencia.sequence;
+                        if (circuloNaInferencia)
+                        {
+                            inferenciasComCirculo++;
+                            inferenciasSemCirculo = 0;
+                        }
+                        else
+                        {
+                            inferenciasSemCirculo++;
+                            inferenciasComCirculo = 0;
+                        }
+
+                        if (!gSinalCirculo && inferenciasComCirculo >= dCONFIRMACOES_ENTRADA)
+                        {
+                            gSinalCirculo = true;
+                        }
+                        else if (gSinalCirculo && inferenciasSemCirculo >= dCONFIRMACOES_SAIDA)
+                        {
+                            gSinalCirculo = false;
+                        }
                     }
 
-                    totalNaZona++;
-                }
+                    // 5A. Borda de subida: circulo confirmado na ROI
+                    if (gSinalCirculo && !estadoAnteriorSinal)
+                    {
+                        std::cout << "[SINAL] >>> CIRCULO confirmado na ROI! Avisando STM32 (0xA1)... <<<" << std::endl;
+                        bridge::enviar_objeto_encontrado();
+                    }
+                    // 5B. Borda de descida: circulo saiu da ROI (confirmado)
+                    else if (!gSinalCirculo && estadoAnteriorSinal)
+                    {
+                        std::cout << "[SINAL] >>> Sem circulo na ROI. Avisando STM32 (0xA0)... <<<" << std::endl;
+                        bridge::enviar_sem_objeto();
+                    }
 
-                gSinalCirculo = circuloDetectadoNesteCiclo;
+                    estadoAnteriorSinal = gSinalCirculo;
 
-                // 5A. Borda de subida: circulo entrou na ROI
-                if (gSinalCirculo && !estadoAnteriorSinal)
-                {
-                    std::cout << "[SINAL] >>> CIRCULO detectado na ROI! Avisando STM32 (0xA1)... <<<" << std::endl;
-                    bridge::enviar_objeto_encontrado();
-                }
-                // 5B. Borda de descida: circulo saiu da ROI
-                else if (!gSinalCirculo && estadoAnteriorSinal)
-                {
-                    std::cout << "[SINAL] >>> Sem circulo na ROI. Avisando STM32 (0xA0)... <<<" << std::endl;
-                    bridge::enviar_sem_objeto();
-                }
+                    // HUD normal quando a varredura esta ativa
+                    cv::putText(tela, "Na zona: " + std::to_string(totalNaZona), cv::Point(10, 30),
+                                cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 255, 255), 2);
 
-                estadoAnteriorSinal = gSinalCirculo;
-
-                // HUD normal quando a varredura esta ativa
-                cv::putText(frame, "Na zona: " + std::to_string(totalNaZona), cv::Point(10, 30),
-                            cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 255, 255), 2);
-
-                if (gSinalCirculo)
-                {
-                    cv::putText(frame, "SINAL ATIVO: CIRCULO [FLAG = 1]", cv::Point(10, 65),
-                                cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 0, 255), 2);
+                    if (gSinalCirculo)
+                    {
+                        cv::putText(tela, "SINAL ATIVO: CIRCULO [FLAG = 1]", cv::Point(10, 65),
+                                    cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 0, 255), 2);
+                    }
                 }
             }
 
-            cv::putText(frame, "[s] salvar ROI  [ESC] sair", cv::Point(10, frame.rows - 15),
+            cv::putText(tela, "[s] salvar ROI  [ESC] sair", cv::Point(10, tela.rows - 15),
                         cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 255), 1);
 
-            cv::imshow(dWINDOW_NAME, frame);
+            cv::imshow(dWINDOW_NAME, tela);
         }
 
         // Aguarda evento de teclado (1 ms). '& 0xFF' normaliza o retorno entre backends
@@ -292,6 +342,21 @@ void Orchestrator_Stop(void)
 /*******************************************************************************
  * FUNCOES LOCAIS
  ******************************************************************************/
+
+/******************************************************************************/
+/**
+ * @brief  Desenha a moldura da Zona de Inspecao (amarelo, BGR: 0, 255, 255).
+ * @param  frame Quadro onde a moldura sera desenhada.
+ * @return cv::Rect A ROI em pixels deste quadro (a mesma usada para filtrar as caixas).
+ ******************************************************************************/
+static cv::Rect DesenharZonaInspecao(cv::Mat& frame)
+{
+    const cv::Rect roi = ObterEnquadramentoInspecao(frame.size());
+    cv::rectangle(frame, roi, cv::Scalar(0, 255, 255), 2);
+    cv::putText(frame, "ZONA DE INSPECAO", cv::Point(roi.x, std::max(15, roi.y - 10)),
+                cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 255), 1);
+    return roi;
+}
 
 /******************************************************************************/
 /**

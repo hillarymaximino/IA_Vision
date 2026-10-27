@@ -29,7 +29,9 @@
  ******************************************************************************/
 static constexpr int dINPUT_SIZE = 640;
 static constexpr float dCONFIDENCE_THRESHOLD = 0.20f;
-static constexpr float dNMS_THRESHOLD        = 0.60f;
+// IoU acima do qual caixas da mesma classe sao fundidas. Com 0.60 duas caixas
+// parcialmente sobrepostas no mesmo circulo sobreviviam (deteccao "dupla").
+static constexpr float dNMS_THRESHOLD        = 0.45f;
 
 // Identificadores mapeados conforme data.yaml
 static constexpr int dCLASS_ID_CIRCULO   = 0;
@@ -51,6 +53,8 @@ static struct
     bool hasNewFrame{false};
 
     std::vector<DetectionResult> results;
+    cv::Mat resultFrame;        /**< Quadro em que `results` foi calculado. */
+    uint64_t resultSequence{0}; /**< Numero da ultima inferencia publicada. */
     std::mutex resultMutex;
 
     std::atomic<bool> isRunning{false};
@@ -139,10 +143,18 @@ void Vision_SubmitFrame(const cv::Mat& frame)
     visionCtx.inputCv.notify_one();
 }
 
-void Vision_GetOverlay(std::vector<DetectionResult>& outDetections)
+bool Vision_GetLatest(InferenceResult& out)
 {
     std::lock_guard<std::mutex> lock(visionCtx.resultMutex);
-    outDetections = visionCtx.results;
+    if (visionCtx.resultFrame.empty())
+    {
+        return false;
+    }
+    // Copia profunda: o chamador desenha o HUD sobre o quadro
+    out.frame = visionCtx.resultFrame.clone();
+    out.detections = visionCtx.results;
+    out.sequence = visionCtx.resultSequence;
+    return true;
 }
 
 void Vision_Reset(void)
@@ -157,6 +169,9 @@ void Vision_Reset(void)
     {
         std::lock_guard<std::mutex> lock(visionCtx.resultMutex);
         visionCtx.results.clear();
+        visionCtx.resultFrame.release();
+        // resultSequence nao volta: o Orchestrator compara sequencias para contar
+        // so inferencias novas, e um numero repetido seria tomado como "ja visto"
     }
 }
 
@@ -271,6 +286,8 @@ static void VisionLoop(void)
             if (frameGeneration == visionCtx.generation.load())
             {
                 visionCtx.results = std::move(detections);
+                visionCtx.resultFrame = frame;   // ja e uma copia exclusiva desta thread
+                visionCtx.resultSequence++;
             }
         }
     }

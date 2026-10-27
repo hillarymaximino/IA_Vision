@@ -222,7 +222,13 @@ e usar o comando `s`.
 - `s` salva a calibração da ROI;
 - `ESC` encerra.
 
-As trackbars ajustam a ROI ao vivo.
+As trackbars ajustam a ROI ao vivo. A ROI padrão é **centro X 500, centro Y 260,
+largura 380 e altura 380**, em milésimos do quadro. Se existir um `roi_config.yml` salvo
+com a tecla `s`, ele tem prioridade. Apague esse arquivo para voltar ao padrão.
+
+Enquanto a varredura está ativa, a janela mostra **o quadro que a IA avaliou**, e não o
+quadro mais novo da câmera. A caixa e a ROI aparecem exatamente onde o sistema decidiu.
+Por isso, a imagem atualiza no ritmo da inferência, que é mais lento em CPU.
 
 > **Firmware ≥ 1.1.0 obrigatório.** A visão só fica liberada enquanto o STM32 reenvia
 > o estado a cada 1 s. Com o firmware antigo, que não reenvia, a tela volta para
@@ -277,6 +283,10 @@ A pinagem completa e os detalhes dos timers estão em [`firmware_stm32/README.md
 - **Quadro limpo para a IA:** agora a IA recebe o quadro **sem** o desenho da ROI. No JDJDJD, a moldura amarela era desenhada antes do `Vision_SubmitFrame`.
 - **CUDA:** a `VisionModule` verifica se a CUDA existe antes de usá-la. Sem isso, o log dizia "CUDA inicializado" mesmo rodando em CPU.
 - **Falha na conexão:** se o STM32 não conectar na inicialização, a câmera é liberada.
+- **Decisão no quadro certo (2.3.0):** a `VisionModule` publica cada inferência junto com o quadro em que ela rodou (`Vision_GetLatest`, que substitui `Vision_GetOverlay`). Antes, as caixas de uma inferência antiga eram desenhadas e testadas contra a ROI no quadro **atual**. Com a esteira andando, a caixa ficava atrás do círculo, e um círculo que já tinha saído da área ainda era detectado dentro dela.
+- **Confirmação do sinal (2.3.0):** o `0xA1` só sai com 2 inferências seguidas com círculo na ROI, e o `0xA0` só com 3 seguidas sem círculo. Antes, uma única inferência que "piscava" derrubava e religava o sinal (`0xA1`, `0xA0`, `0xA1`: a detecção dupla). A contagem considera só inferências novas, e não cada quadro da câmera.
+- **NMS 0,45 (2.3.0):** caixas da mesma classe com sobreposição acima de 45% viram uma só. Com 0,60, duas caixas no mesmo círculo sobreviviam.
+- **ROI padrão (2.3.0):** centro (500, 260) e tamanho 380×380, em milésimos do quadro.
 - **Sem detecção antiga (2.2.0):** na pausa e na retomada, `Vision_Reset()` descarta o quadro pendente, as detecções publicadas e o resultado de inferências em andamento. Assim, nenhuma detecção de antes da pausa dispara `0xA1` depois dela.
 - **Limpeza:**
   - a função `ObterNomeForma`, que não era usada, foi removida;
@@ -314,7 +324,8 @@ e na bridge 1.2.0 (ver §9).
 | `Falha ao abrir porta serial: COMx` | Porta aberta em outro programa (CubeIDE, monitor serial) | Feche o terminal serial ou a sessão de debug do CubeIDE |
 | `Nenhum microcontrolador STM32 detectado` | ST-Link com outro PID ou adaptador USB-TTL | Passe `--port COMx` |
 | Tela em `PAUSADO: ESTEIRA PARADA` com a esteira girando | Firmware antigo (< 1.1.0) sem reenvio do estado, ou motor desligado do ponto de vista do STM32 (PD0) | Grave o firmware pelo launcher e confira no `bridge_example` (comando `v`) se chega `0xB1` |
-| Visão detectando com a esteira parada | Firmware antigo (< 1.1.0) | Grave o firmware 1.1.0 ou mais novo. Ele pausa a visão sempre que o motor para |
+| Visão detectando com a esteira parada | Firmware antigo (< 1.1.0), ou o STM32 acha que o motor está ligado (PD0) | Grave o firmware 1.1.0 ou mais novo. Com a esteira parada, a tela tem que mostrar `PAUSADO`. Se não mostrar, confira no `bridge_example` (comando `v`) e veja a pendência 1 da §10 (polaridade do PD0) |
+| ROI diferente do padrão 500/260/380/380 | `roi_config.yml` antigo na pasta `visao/` | Apague o arquivo ou ajuste as trackbars e salve com `s` |
 | `Timeout aguardando ACK` | Firmware não gravado, baud diferente ou VCP sem ligação com PA9/PA10 | Teste com o `bridge_example` e confira a ligação da USART1 com o ST-Link |
 | Build do firmware no CubeIDE falha com "No such file" | Caminho com espaço ou acento ("Apresentação Esteira") | Use o botão **Gravar no STM32** do launcher, que aceita esse caminho, ou copie `firmware_stm32/` para um caminho sem espaços |
 | `No debug probe detected` ao gravar | ST-Link desconectado, sem permissão USB ou ocupado | Reconecte o ST-Link, feche o debug do CubeIDE e, no Linux, reconecte depois de instalar o `stlink-tools` |
