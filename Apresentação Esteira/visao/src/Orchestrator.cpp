@@ -29,6 +29,7 @@
 #include "Orchestrator.hpp"
 #include "CameraModule.hpp"
 #include "VisionModule.hpp"
+#include "SinalObjeto.hpp"
 #include "Stm32Bridge.hpp"
 #include <opencv2/opencv.hpp>
 #include <algorithm>
@@ -80,6 +81,7 @@ static std::atomic<bool> gSinalCirculo{false};
 static cv::Rect ObterEnquadramentoInspecao(const cv::Size& frameSize);
 static cv::Rect DesenharZonaInspecao(cv::Mat& frame);
 static void DesenharDeteccao(cv::Mat& frame, const cv::Rect& box, const std::string& label);
+static void ExecutarAcao(SinalObjeto::Acao acao, const char* motivo);
 static void CarregarROI(void);
 static void SalvarROI(void);
 
@@ -142,9 +144,10 @@ bool Orchestrator_Init(const std::string& modelPath, const std::string& cameraSN
  *       - Vermelho + "CIRCULO": circulo reconhecido.
  *       - Vermelho + "Nao detectada": anomalia / forma desconhecida.
  *       - Outras formas: so contam em "Na zona", sem desenho.
- * \n 5. A cada inferencia NOVA, atualiza o sinal com histerese: liga apos
- *       dCONFIRMACOES_ENTRADA inferencias seguidas com circulo e desliga apos
- *       dCONFIRMACOES_SAIDA seguidas sem. Envia 0xA1/0xA0 nas bordas do sinal.
+ * \n 5. A cada inferencia NOVA, alimenta o SinalObjeto: 0xA1 apos
+ *       dCONFIRMACOES_ENTRADA inferencias seguidas com circulo; 0xA0 na pausa ou apos
+ *       dCONFIRMACOES_SAIDA seguidas sem. Um objeto ja contado so rearma o sinal
+ *       quando a ROI esvazia com a esteira andando (um 0xA1 por objeto).
  * \n Teclas: 's' salva a calibracao da ROI, ESC encerra.
  ******************************************************************************/
 void Orchestrator_Run(void)
@@ -165,11 +168,9 @@ void Orchestrator_Run(void)
 
     cv::Mat frame;
     InferenceResult inferencia;
-    bool estadoAnteriorSinal = false;
+    SinalObjeto sinal(dCONFIRMACOES_ENTRADA, dCONFIRMACOES_SAIDA);
     bool varreduraAnterior = false;
     uint64_t ultimaSequencia = 0;   // ultima inferencia ja contabilizada no sinal
-    int inferenciasComCirculo = 0;
-    int inferenciasSemCirculo = 0;
 
     std::cout << "[ORCHESTRATOR] Pipeline ativo. 's' = salvar ROI | ESC = finalizar." << std::endl;
 
@@ -187,10 +188,19 @@ void Orchestrator_Run(void)
             if (varreduraAtiva != varreduraAnterior)
             {
                 Vision_Reset();
-                inferenciasComCirculo = 0;
-                inferenciasSemCirculo = 0;
+                if (varreduraAtiva)
+                {
+                    sinal.aoRetomar();
+                }
+                else
+                {
+                    // Pausa: devolve o PD7 para 1, mas o objeto ja contado so rearma
+                    // quando a ROI esvaziar com a esteira andando (evita contar 2x)
+                    ExecutarAcao(sinal.aoPausar(), "varredura pausada");
+                }
                 varreduraAnterior = varreduraAtiva;
             }
+            gSinalCirculo = (sinal.estado() == SinalObjeto::Estado::Sinalizado);
 
             // Quadro exibido: ao vivo na pausa; na varredura, o quadro avaliado pela IA
             cv::Mat tela;
@@ -198,14 +208,6 @@ void Orchestrator_Run(void)
             if (!varreduraAtiva)
             {
                 // 2. Varredura pausada pelo STM32 (esteira parada / servo atuando)
-                if (estadoAnteriorSinal)
-                {
-                    std::cout << "[STM32] Varredura pausada. Resetando sinal para SEM OBJETO (0xA0)..." << std::endl;
-                    bridge::enviar_sem_objeto();
-                    estadoAnteriorSinal = false;
-                }
-                gSinalCirculo = false;
-
                 tela = frame;
                 DesenharZonaInspecao(tela);
                 cv::putText(tela, "PAUSADO: ESTEIRA PARADA (AGUARDANDO 0xB1)", cv::Point(10, 30),
@@ -255,55 +257,28 @@ void Orchestrator_Run(void)
                         totalNaZona++;
                     }
 
-                    // 5. Histerese: conta so inferencias NOVAS (a mesma inferencia e
-                    //    reaproveitada em varios quadros da camera enquanto a IA trabalha)
+                    // 5. Sinal 0xA1/0xA0 (SinalObjeto): so inferencias NOVAS contam; a mesma
+                    //    inferencia e reaproveitada em varios quadros enquanto a IA trabalha
                     if (inferencia.sequence != ultimaSequencia)
                     {
                         ultimaSequencia = inferencia.sequence;
-                        if (circuloNaInferencia)
-                        {
-                            inferenciasComCirculo++;
-                            inferenciasSemCirculo = 0;
-                        }
-                        else
-                        {
-                            inferenciasSemCirculo++;
-                            inferenciasComCirculo = 0;
-                        }
-
-                        if (!gSinalCirculo && inferenciasComCirculo >= dCONFIRMACOES_ENTRADA)
-                        {
-                            gSinalCirculo = true;
-                        }
-                        else if (gSinalCirculo && inferenciasSemCirculo >= dCONFIRMACOES_SAIDA)
-                        {
-                            gSinalCirculo = false;
-                        }
+                        ExecutarAcao(sinal.aoNovaInferencia(circuloNaInferencia), "inferencia");
+                        gSinalCirculo = (sinal.estado() == SinalObjeto::Estado::Sinalizado);
                     }
-
-                    // 5A. Borda de subida: circulo confirmado na ROI
-                    if (gSinalCirculo && !estadoAnteriorSinal)
-                    {
-                        std::cout << "[SINAL] >>> CIRCULO confirmado na ROI! Avisando STM32 (0xA1)... <<<" << std::endl;
-                        bridge::enviar_objeto_encontrado();
-                    }
-                    // 5B. Borda de descida: circulo saiu da ROI (confirmado)
-                    else if (!gSinalCirculo && estadoAnteriorSinal)
-                    {
-                        std::cout << "[SINAL] >>> Sem circulo na ROI. Avisando STM32 (0xA0)... <<<" << std::endl;
-                        bridge::enviar_sem_objeto();
-                    }
-
-                    estadoAnteriorSinal = gSinalCirculo;
 
                     // HUD normal quando a varredura esta ativa
                     cv::putText(tela, "Na zona: " + std::to_string(totalNaZona), cv::Point(10, 30),
                                 cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 255, 255), 2);
 
-                    if (gSinalCirculo)
+                    if (sinal.estado() == SinalObjeto::Estado::Sinalizado)
                     {
                         cv::putText(tela, "SINAL ATIVO: CIRCULO [FLAG = 1]", cv::Point(10, 65),
                                     cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 0, 255), 2);
+                    }
+                    else if (sinal.estado() == SinalObjeto::Estado::AguardandoSaida)
+                    {
+                        cv::putText(tela, "OBJETO JA CONTADO: AGUARDANDO SAIR DA ZONA", cv::Point(10, 65),
+                                    cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 165, 255), 2);
                     }
                 }
             }
@@ -372,6 +347,34 @@ static void DesenharDeteccao(cv::Mat& frame, const cv::Rect& box, const std::str
     cv::rectangle(frame, box, cor, 2);
     cv::Point textPos(box.x, std::max(20, box.y - 5));
     cv::putText(frame, label, textPos, cv::FONT_HERSHEY_SIMPLEX, 0.6, cor, 2);
+}
+
+/******************************************************************************/
+/**
+ * @brief  Traduz uma acao do SinalObjeto no comando correspondente ao STM32.
+ * @param  acao Acao decidida pela maquina de estados do sinal.
+ * @param  motivo Contexto exibido no log (ex: "inferencia", "varredura pausada").
+ * @return void
+ ******************************************************************************/
+static void ExecutarAcao(SinalObjeto::Acao acao, const char* motivo)
+{
+    switch (acao)
+    {
+        case SinalObjeto::Acao::EnviarObjetoEncontrado:
+            std::cout << "[SINAL] >>> CIRCULO confirmado na ROI (" << motivo
+                      << "). Avisando STM32 (0xA1)... <<<" << std::endl;
+            bridge::enviar_objeto_encontrado();
+            break;
+
+        case SinalObjeto::Acao::EnviarSemObjeto:
+            std::cout << "[SINAL] >>> Sem objeto (" << motivo
+                      << "). Avisando STM32 (0xA0)... <<<" << std::endl;
+            bridge::enviar_sem_objeto();
+            break;
+
+        case SinalObjeto::Acao::Nenhuma:
+            break;
+    }
 }
 
 /******************************************************************************/

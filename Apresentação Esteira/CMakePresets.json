@@ -34,5 +34,10 @@
     { "name": "windows", "configurePreset": "windows", "configuration": "Release" },
     { "name": "windows-bridge", "configurePreset": "windows-bridge", "configuration": "Release" },
     { "name": "linux", "configurePreset": "linux" }
+  ],
+  "testPresets": [
+    { "name": "windows", "configurePreset": "windows", "configuration": "Release", "output": { "outputOnFailure": true } },
+    { "name": "windows-bridge", "configurePreset": "windows-bridge", "configuration": "Release", "output": { "outputOnFailure": true } },
+    { "name": "linux", "configurePreset": "linux", "output": { "outputOnFailure": true } }
   ]
 }
