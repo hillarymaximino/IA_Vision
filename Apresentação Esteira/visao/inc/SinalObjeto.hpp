@@ -8,23 +8,31 @@
  * \n <b>Grupo de Pesquisa:</b> ASSERT - IFPB
  * \n <b>Projeto:</b> SICOV
  *
- * Garante UM 0xA1 por objeto fisico. A InovaLink conta cada descida do PD7; sem
- * rearme, o mesmo circulo era contado de novo quando a esteira voltava a andar com
- * ele ainda dentro da ROI (a esteira para justamente com o objeto na zona).
+ * Regra da esteira (um ciclo de servo por objeto):
+ *  1. Circulo confirmado na ROI: envia 0xA1 UMA vez e PARA de detectar.
+ *  2. Esteira parada (0xB0): nao envia nada; o PD7 fica em 0 durante todo o ciclo
+ *     do servo na InovaLink. Deteccoes nesse periodo sao ignoradas.
+ *  3. Esteira volta a andar (0xB1): so entao envia 0xA0 (PD7 = 1), como no protocolo
+ *     original. Volta a detectar, mas o objeto recem-tratado so rearma o sinal depois
+ *     de sair da ROI (evita contar o mesmo circulo de novo).
+ *  4. Seguranca: se a esteira nao parar em `timeoutSemParadaMs` apos o 0xA1, libera o
+ *     PD7 (0xA0) para o sistema nao ficar travado.
  *
  * \code
- *            circulo em N_ENTRADA inferencias seguidas
- *  PRONTO ------------------------------------------> SINALIZADO   (envia 0xA1)
- *    ^                                                  |      |
- *    |   ROI sem circulo em N_SAIDA inferencias         |      | pausa da varredura (0xB0)
- *    +--------------------------------------------------+      | (envia 0xA0)
- *    |        (envia 0xA0: objeto saiu sem parar a esteira)    v
- *    +------------------------------------------- AGUARDANDO_SAIDA
- *         ROI sem circulo em N_SAIDA inferencias (nao envia nada: so rearma)
+ *           circulo em N_ENTRADA inferencias seguidas (0xA1)
+ *  PRONTO ----------------------------------------------> SINALIZADO
+ *    ^                                                      |  (nao detecta)
+ *    |                                       0xB0 recebido  |   timeout sem parada
+ *    |                                                      v   (0xA0) ------------+
+ *    |                                              ESTEIRA_PARADA                  |
+ *    |                                               (nao detecta)                  |
+ *    |                                                      |  0xB1 recebido (0xA0) |
+ *    |   ROI sem circulo em N_SAIDA inferencias             v                       |
+ *    +------------------------------------------- AGUARDANDO_SAIDA <-----------------+
  * \endcode
  *
- * Sem dependencia de OpenCV ou serial: o Orchestrator traduz as Acoes em chamadas
- * da bridge, e a logica pode ser testada isoladamente.
+ * Sem dependencia de OpenCV, serial ou relogio: o Orchestrator informa o tempo e
+ * traduz as Acoes em chamadas da bridge. Testado em tests/test_sinal_objeto.cpp.
  *
  * @{
  ******************************************************************************/
@@ -32,14 +40,17 @@
 #ifndef SINAL_OBJETO_HPP
 #define SINAL_OBJETO_HPP
 
+#include <cstdint>
+
 class SinalObjeto
 {
 public:
     enum class Estado
     {
-        Pronto,           /**< Armado: o proximo circulo confirmado gera 0xA1. */
-        Sinalizado,       /**< 0xA1 enviado; PD7 = 0 no STM32. */
-        AguardandoSaida   /**< Objeto ja contado; espera a ROI esvaziar para rearmar. */
+        Pronto,           /**< Detectando; o proximo circulo confirmado gera 0xA1. */
+        Sinalizado,       /**< 0xA1 enviado; deteccao parada, esperando a esteira parar. */
+        EsteiraParada,    /**< Esteira parada apos o 0xA1 (servo atuando); nada e enviado. */
+        AguardandoSaida   /**< Esteira andando de novo; espera o objeto sair da ROI. */
     };
 
     enum class Acao
@@ -50,15 +61,31 @@ public:
     };
 
     /**
-     * @param confirmacoesEntrada Inferencias seguidas COM circulo na ROI para sinalizar.
-     * @param confirmacoesSaida   Inferencias seguidas SEM circulo na ROI para liberar/rearmar.
+     * @param confirmacoesEntrada Inferencias seguidas COM circulo na ROI para enviar 0xA1.
+     * @param confirmacoesSaida   Inferencias seguidas SEM circulo na ROI para rearmar.
+     * @param timeoutSemParadaMs  Tempo maximo esperando a esteira parar apos o 0xA1.
      */
-    SinalObjeto(int confirmacoesEntrada, int confirmacoesSaida)
-        : mEntrada(confirmacoesEntrada), mSaida(confirmacoesSaida) {}
+    SinalObjeto(int confirmacoesEntrada, int confirmacoesSaida, int64_t timeoutSemParadaMs)
+        : mEntrada(confirmacoesEntrada), mSaida(confirmacoesSaida), mTimeoutMs(timeoutSemParadaMs) {}
 
-    /** @brief Processa UMA inferencia nova (nunca a mesma inferencia duas vezes). */
-    Acao aoNovaInferencia(bool circuloNaRoi)
+    /** @brief true se a IA deve receber quadros (esteira andando e sem objeto pendente). */
+    bool detectando() const
     {
+        return mEstado == Estado::Pronto || mEstado == Estado::AguardandoSaida;
+    }
+
+    /**
+     * @brief Processa UMA inferencia nova feita com a esteira andando.
+     * @param circuloNaRoi Circulo valido com a caixa inteira dentro da ROI.
+     * @param agoraMs      Relogio monotonic em ms (marca o instante do 0xA1).
+     */
+    Acao aoNovaInferencia(bool circuloNaRoi, int64_t agoraMs)
+    {
+        if (!detectando())
+        {
+            return Acao::Nenhuma;   // regra 1/2: depois do 0xA1 nenhuma deteccao conta
+        }
+
         if (circuloNaRoi)
         {
             mComCirculo++;
@@ -70,44 +97,37 @@ public:
             mComCirculo = 0;
         }
 
-        switch (mEstado)
+        if (mEstado == Estado::Pronto && mComCirculo >= mEntrada)
         {
-            case Estado::Pronto:
-                if (mComCirculo >= mEntrada)
-                {
-                    mudarPara(Estado::Sinalizado);
-                    return Acao::EnviarObjetoEncontrado;
-                }
-                break;
-
-            case Estado::Sinalizado:
-                if (mSemCirculo >= mSaida)
-                {
-                    // Objeto saiu da ROI sem a controladora parar a esteira
-                    mudarPara(Estado::Pronto);
-                    return Acao::EnviarSemObjeto;
-                }
-                break;
-
-            case Estado::AguardandoSaida:
-                if (mSemCirculo >= mSaida)
-                {
-                    mudarPara(Estado::Pronto);
-                }
-                break;
+            mudarPara(Estado::Sinalizado);
+            mInstanteSinalMs = agoraMs;
+            return Acao::EnviarObjetoEncontrado;
+        }
+        if (mEstado == Estado::AguardandoSaida && mSemCirculo >= mSaida)
+        {
+            mudarPara(Estado::Pronto);
         }
         return Acao::Nenhuma;
     }
 
-    /**
-     * @brief A varredura foi pausada pelo STM32 (esteira parada / servo atuando).
-     * @return EnviarSemObjeto se havia sinal ativo (devolve o PD7 para 1). O objeto
-     *         ja contado continua bloqueado ate a ROI esvaziar com a esteira andando.
-     */
-    Acao aoPausar()
+    /** @brief A esteira parou (0xB0). Nunca envia nada: o PD7 fica como esta. */
+    void aoPausar()
     {
         zerarContagem();
         if (mEstado == Estado::Sinalizado)
+        {
+            mEstado = Estado::EsteiraParada;
+        }
+    }
+
+    /**
+     * @brief A esteira voltou a andar (0xB1).
+     * @return EnviarSemObjeto se este e o fim do ciclo de um objeto sinalizado.
+     */
+    Acao aoRetomar()
+    {
+        zerarContagem();
+        if (mEstado == Estado::EsteiraParada)
         {
             mEstado = Estado::AguardandoSaida;
             return Acao::EnviarSemObjeto;
@@ -115,8 +135,19 @@ public:
         return Acao::Nenhuma;
     }
 
-    /** @brief A varredura foi retomada: recomeca a contagem, mantendo o estado. */
-    void aoRetomar() { zerarContagem(); }
+    /**
+     * @brief Chamar periodicamente. Libera o PD7 se a esteira nao parar a tempo.
+     * @param agoraMs Relogio monotonic em ms.
+     */
+    Acao verificarTimeout(int64_t agoraMs)
+    {
+        if (mEstado == Estado::Sinalizado && (agoraMs - mInstanteSinalMs) >= mTimeoutMs)
+        {
+            mudarPara(Estado::AguardandoSaida);
+            return Acao::EnviarSemObjeto;
+        }
+        return Acao::Nenhuma;
+    }
 
     Estado estado() const { return mEstado; }
 
@@ -135,9 +166,11 @@ private:
 
     const int mEntrada;
     const int mSaida;
+    const int64_t mTimeoutMs;
     Estado mEstado{Estado::Pronto};
     int mComCirculo{0};
     int mSemCirculo{0};
+    int64_t mInstanteSinalMs{0};
 };
 
 #endif /* SINAL_OBJETO_HPP */

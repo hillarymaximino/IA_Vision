@@ -33,6 +33,7 @@
 #include "Stm32Bridge.hpp"
 #include <opencv2/opencv.hpp>
 #include <algorithm>
+#include <chrono>
 #include <atomic>
 #include <cstdint>
 #include <iostream>
@@ -58,8 +59,11 @@ static constexpr int dCLASS_ID_CIRCULO = 0;
 /** @brief Inferencias seguidas COM circulo na ROI para enviar 0xA1 (filtra falso positivo isolado). */
 static constexpr int dCONFIRMACOES_ENTRADA = 2;
 
-/** @brief Inferencias seguidas SEM circulo na ROI para enviar 0xA0 (filtra uma inferencia que "pisca"). */
+/** @brief Inferencias seguidas SEM circulo na ROI para rearmar apos um objeto ja tratado. */
 static constexpr int dCONFIRMACOES_SAIDA = 3;
+
+/** @brief Tempo maximo esperando a esteira parar apos o 0xA1; depois disso envia 0xA0. */
+static constexpr int64_t dTIMEOUT_SEM_PARADA_MS = 5000;
 
 /*******************************************************************************
  * VARIAVEIS DA ROI E SINAIS DE CONTROLE
@@ -82,6 +86,7 @@ static cv::Rect ObterEnquadramentoInspecao(const cv::Size& frameSize);
 static cv::Rect DesenharZonaInspecao(cv::Mat& frame);
 static void DesenharDeteccao(cv::Mat& frame, const cv::Rect& box, const std::string& label);
 static void ExecutarAcao(SinalObjeto::Acao acao, const char* motivo);
+static int64_t AgoraMs(void);
 static void CarregarROI(void);
 static void SalvarROI(void);
 
@@ -145,9 +150,10 @@ bool Orchestrator_Init(const std::string& modelPath, const std::string& cameraSN
  *       - Vermelho + "Nao detectada": anomalia / forma desconhecida.
  *       - Outras formas: so contam em "Na zona", sem desenho.
  * \n 5. A cada inferencia NOVA, alimenta o SinalObjeto: 0xA1 apos
- *       dCONFIRMACOES_ENTRADA inferencias seguidas com circulo; 0xA0 na pausa ou apos
- *       dCONFIRMACOES_SAIDA seguidas sem. Um objeto ja contado so rearma o sinal
- *       quando a ROI esvazia com a esteira andando (um 0xA1 por objeto).
+ *       dCONFIRMACOES_ENTRADA inferencias seguidas com circulo e a deteccao PARA.
+ *       Com a esteira parada nada e enviado. Quando ela volta a andar, envia 0xA0 e
+ *       volta a detectar; o objeto recem-tratado so rearma o sinal ao sair da ROI.
+ *       Um 0xA1 por objeto, um ciclo de servo por objeto.
  * \n Teclas: 's' salva a calibracao da ROI, ESC encerra.
  ******************************************************************************/
 void Orchestrator_Run(void)
@@ -168,8 +174,9 @@ void Orchestrator_Run(void)
 
     cv::Mat frame;
     InferenceResult inferencia;
-    SinalObjeto sinal(dCONFIRMACOES_ENTRADA, dCONFIRMACOES_SAIDA);
+    SinalObjeto sinal(dCONFIRMACOES_ENTRADA, dCONFIRMACOES_SAIDA, dTIMEOUT_SEM_PARADA_MS);
     bool varreduraAnterior = false;
+    bool detectandoAnterior = true;
     uint64_t ultimaSequencia = 0;   // ultima inferencia ja contabilizada no sinal
 
     std::cout << "[ORCHESTRATOR] Pipeline ativo. 's' = salvar ROI | ESC = finalizar." << std::endl;
@@ -183,39 +190,62 @@ void Orchestrator_Run(void)
             // estiver desconectado ou sem enviar o estado ha mais de 2,5 s (fail-safe).
             const bool varreduraAtiva = bridge::esta_varredura_ativa();
 
-            // Na troca de estado, descarta tudo o que a IA produziu antes: nenhuma
-            // deteccao de antes de uma pausa pode acionar o STM32 depois dela.
             if (varreduraAtiva != varreduraAnterior)
             {
-                Vision_Reset();
                 if (varreduraAtiva)
                 {
-                    sinal.aoRetomar();
+                    // Esteira voltou a andar: fim do ciclo do objeto sinalizado (0xA0)
+                    ExecutarAcao(sinal.aoRetomar(), "esteira voltou a andar");
                 }
                 else
                 {
-                    // Pausa: devolve o PD7 para 1, mas o objeto ja contado so rearma
-                    // quando a ROI esvaziar com a esteira andando (evita contar 2x)
-                    ExecutarAcao(sinal.aoPausar(), "varredura pausada");
+                    // Esteira parou: nada e enviado; o PD7 fica em 0 durante o servo
+                    sinal.aoPausar();
                 }
                 varreduraAnterior = varreduraAtiva;
             }
-            gSinalCirculo = (sinal.estado() == SinalObjeto::Estado::Sinalizado);
 
-            // Quadro exibido: ao vivo na pausa; na varredura, o quadro avaliado pela IA
+            // Seguranca: a controladora nao parou a esteira apos o 0xA1
+            ExecutarAcao(sinal.verificarTimeout(AgoraMs()), "esteira nao parou em 5 s");
+
+            // A IA so trabalha com a esteira andando e sem objeto pendente. Ao entrar ou
+            // sair desse modo, descarta tudo o que ela produziu antes: nenhuma deteccao
+            // antiga pode acionar o STM32 depois.
+            const bool detectar = varreduraAtiva && sinal.detectando();
+            if (detectar != detectandoAnterior)
+            {
+                Vision_Reset();
+                detectandoAnterior = detectar;
+            }
+            gSinalCirculo = !sinal.detectando();
+
+            // Quadro exibido: ao vivo sem deteccao; detectando, o quadro avaliado pela IA
             cv::Mat tela;
 
-            if (!varreduraAtiva)
+            if (!detectar)
             {
-                // 2. Varredura pausada pelo STM32 (esteira parada / servo atuando)
+                // 2. Sem deteccao: esteira parada, ou circulo ja sinalizado esperando a parada
                 tela = frame;
                 DesenharZonaInspecao(tela);
-                cv::putText(tela, "PAUSADO: ESTEIRA PARADA (AGUARDANDO 0xB1)", cv::Point(10, 30),
-                            cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 165, 255), 2);
+                if (!varreduraAtiva)
+                {
+                    cv::putText(tela, "PAUSADO: ESTEIRA PARADA (AGUARDANDO 0xB1)", cv::Point(10, 30),
+                                cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 165, 255), 2);
+                }
+                if (sinal.estado() == SinalObjeto::Estado::Sinalizado)
+                {
+                    cv::putText(tela, "CIRCULO DETECTADO: AGUARDANDO A ESTEIRA PARAR", cv::Point(10, 65),
+                                cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 0, 255), 2);
+                }
+                else if (sinal.estado() == SinalObjeto::Estado::EsteiraParada)
+                {
+                    cv::putText(tela, "OBJETO SINALIZADO: SERVO EM ACAO [FLAG = 1]", cv::Point(10, 65),
+                                cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 0, 255), 2);
+                }
             }
             else
             {
-                // 3. Varredura ATIVA: o quadro limpo vai para a IA
+                // 3. Detectando: o quadro limpo vai para a IA
                 Vision_SubmitFrame(frame);
 
                 if (!Vision_GetLatest(inferencia))
@@ -257,27 +287,22 @@ void Orchestrator_Run(void)
                         totalNaZona++;
                     }
 
-                    // 5. Sinal 0xA1/0xA0 (SinalObjeto): so inferencias NOVAS contam; a mesma
-                    //    inferencia e reaproveitada em varios quadros enquanto a IA trabalha
+                    // 5. Sinal 0xA1 (SinalObjeto): so inferencias NOVAS contam; a mesma
+                    //    inferencia e reaproveitada em varios quadros enquanto a IA trabalha.
+                    //    Apos o 0xA1 a deteccao para (detectando() = false no proximo quadro).
                     if (inferencia.sequence != ultimaSequencia)
                     {
                         ultimaSequencia = inferencia.sequence;
-                        ExecutarAcao(sinal.aoNovaInferencia(circuloNaInferencia), "inferencia");
-                        gSinalCirculo = (sinal.estado() == SinalObjeto::Estado::Sinalizado);
+                        ExecutarAcao(sinal.aoNovaInferencia(circuloNaInferencia, AgoraMs()), "inferencia");
                     }
 
                     // HUD normal quando a varredura esta ativa
                     cv::putText(tela, "Na zona: " + std::to_string(totalNaZona), cv::Point(10, 30),
                                 cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 255, 255), 2);
 
-                    if (sinal.estado() == SinalObjeto::Estado::Sinalizado)
+                    if (sinal.estado() == SinalObjeto::Estado::AguardandoSaida)
                     {
-                        cv::putText(tela, "SINAL ATIVO: CIRCULO [FLAG = 1]", cv::Point(10, 65),
-                                    cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 0, 255), 2);
-                    }
-                    else if (sinal.estado() == SinalObjeto::Estado::AguardandoSaida)
-                    {
-                        cv::putText(tela, "OBJETO JA CONTADO: AGUARDANDO SAIR DA ZONA", cv::Point(10, 65),
+                        cv::putText(tela, "OBJETO JA TRATADO: AGUARDANDO SAIR DA ZONA", cv::Point(10, 65),
                                     cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 165, 255), 2);
                     }
                 }
@@ -347,6 +372,17 @@ static void DesenharDeteccao(cv::Mat& frame, const cv::Rect& box, const std::str
     cv::rectangle(frame, box, cor, 2);
     cv::Point textPos(box.x, std::max(20, box.y - 5));
     cv::putText(frame, label, textPos, cv::FONT_HERSHEY_SIMPLEX, 0.6, cor, 2);
+}
+
+/******************************************************************************/
+/**
+ * @brief  Relogio monotonic em milissegundos (nao muda com ajuste de hora do sistema).
+ * @return int64_t Milissegundos desde um instante arbitrario fixo.
+ ******************************************************************************/
+static int64_t AgoraMs(void)
+{
+    using namespace std::chrono;
+    return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
 /******************************************************************************/

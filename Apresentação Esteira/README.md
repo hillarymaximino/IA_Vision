@@ -51,10 +51,11 @@ flowchart LR
 > STM32 sem mandar o estado há mais de 2,5 s significam **detecção pausada**.
 
 1. O STM32 liga e envia o **estado real**: `0xB0` se o motor estiver parado, `0xB1` se estiver girando. Depois disso, reenvia o estado a cada 1 s.
-2. A esteira anda (`0xB1`). Se o PC vê um círculo **inteiro** dentro da ROI, envia `0xA1`, e o STM32 coloca `PD7` em 0.
-3. A InovaLink lê `PD7 = 0`, para o motor e aciona o servo. Na hora em que o motor para, o STM32 envia `0xB0` e o PC **pausa a detecção**.
-4. Quando o servo termina e o motor volta a girar, o STM32 envia `0xB1` e o PC volta a detectar, descartando qualquer detecção de antes da pausa. O objeto que já foi contado **não é sinalizado de novo**: o PC só rearma o `0xA1` depois que a ROI fica vazia (3 inferências sem círculo) com a esteira andando. Resultado: **um `0xA1` por objeto**.
-5. Ao ser pausado, o PC também envia `0xA0`, que devolve `PD7` para 1 e prepara o próximo ciclo.
+2. A esteira anda (`0xB1`). Se o PC vê um círculo **inteiro** dentro da ROI em 2 inferências seguidas, envia `0xA1` **uma vez**, e o STM32 coloca `PD7` em 0. A partir daí, **a visão para de detectar**.
+3. A InovaLink lê `PD7 = 0`, para o motor e aciona o servo. O STM32 envia `0xB0`. O PC **não envia nada** com a esteira parada, então o `PD7` fica em 0 durante todo o ciclo do servo.
+4. Quando o servo termina e o motor volta a girar, o STM32 envia `0xB1`. Só então o PC envia `0xA0` (`PD7` volta para 1) e volta a detectar.
+5. O objeto que acabou de ser tratado **não é sinalizado de novo**: o PC só rearma o `0xA1` depois que a ROI fica vazia por 3 inferências com a esteira andando. Resultado: **um `0xA1` e um ciclo de servo por objeto**.
+6. Segurança: se a esteira não parar em 5 s depois do `0xA1`, o PC envia `0xA0` sozinho para o sistema não ficar travado.
 
 ---
 
@@ -256,7 +257,7 @@ Terminal de teste da bridge:
 | Byte | Sentido | Significado |
 | :---: | :---: | :--- |
 | `0xA1` | PC → STM32 | Círculo na ROI. O STM32 coloca `PD7 = 0` |
-| `0xA0` | PC → STM32 | Sem objeto. O STM32 coloca `PD7 = 1` |
+| `0xA0` | PC → STM32 | Fim do ciclo do objeto. O STM32 coloca `PD7 = 1`. Enviado **só quando a esteira volta a andar** depois do `0xA1`, ou após 5 s sem a esteira parar |
 | `0xB0` | STM32 → PC | Varredura **pausada**: motor parado **ou** servo ativo. Enviado na mudança de estado, no boot e reenviado a cada 1 s |
 | `0xB1` | STM32 → PC | Varredura **liberada**: motor ativo **e** servo inativo. Mesmo esquema de envio. O PC só considera liberado se o último `0xB1` tiver menos de 2,5 s |
 | `0x06` | ambos | ACK. O PC tenta até 3 vezes com timeout de 500 ms. O STM32 espera 50 ms |
@@ -292,6 +293,7 @@ A pinagem completa e os detalhes dos timers estão em [`firmware_stm32/README.md
 - **Quadro limpo para a IA:** agora a IA recebe o quadro **sem** o desenho da ROI. No JDJDJD, a moldura amarela era desenhada antes do `Vision_SubmitFrame`.
 - **CUDA:** a `VisionModule` verifica se a CUDA existe antes de usá-la. Sem isso, o log dizia "CUDA inicializado" mesmo rodando em CPU.
 - **Falha na conexão:** se o STM32 não conectar na inicialização, a câmera é liberada.
+- **Para de detectar depois do `0xA1` (2.5.0):** a visão envia `0xA1` uma vez e para de detectar até a esteira parar e voltar a andar. Com a esteira parada, nada é enviado. O `0xA0` saía na hora da parada (`0xB0`), no meio do ciclo do servo, e agora só sai quando a esteira volta a andar (`0xB1`), como no protocolo original. Com o `PD7` voltando para 1 no meio do ciclo, a InovaLink podia disparar o servo duas vezes. Há um timeout de 5 s caso a esteira não pare. A HUD mostra `CIRCULO DETECTADO: AGUARDANDO A ESTEIRA PARAR` e `OBJETO SINALIZADO: SERVO EM ACAO`.
 - **Um `0xA1` por objeto (2.4.0):** a lógica do sinal virou a máquina de estados `SinalObjeto` (`visao/inc/SinalObjeto.hpp`), com os estados PRONTO, SINALIZADO e AGUARDANDO_SAIDA. A esteira para justamente com o círculo dentro da ROI. Antes, quando ela voltava a andar, o mesmo círculo era detectado de novo e a InovaLink contava 2. Agora, depois de sinalizar, o PC só rearma quando a ROI fica vazia por 3 inferências com a esteira andando. A HUD mostra `OBJETO JA CONTADO: AGUARDANDO SAIR DA ZONA` nesse intervalo. A regra é coberta pelo teste `tests/test_sinal_objeto.cpp` (`ctest`).
 - **Decisão no quadro certo (2.3.0):** a `VisionModule` publica cada inferência junto com o quadro em que ela rodou (`Vision_GetLatest`, que substitui `Vision_GetOverlay`). Antes, as caixas de uma inferência antiga eram desenhadas e testadas contra a ROI no quadro **atual**. Com a esteira andando, a caixa ficava atrás do círculo, e um círculo que já tinha saído da área ainda era detectado dentro dela.
 - **Confirmação do sinal (2.3.0):** o `0xA1` só sai com 2 inferências seguidas com círculo na ROI, e o `0xA0` só com 3 seguidas sem círculo. Antes, uma única inferência que "piscava" derrubava e religava o sinal (`0xA1`, `0xA0`, `0xA1`: a detecção dupla). A contagem considera só inferências novas, e não cada quadro da câmera.
@@ -335,7 +337,7 @@ e na bridge 1.2.0 (ver §9).
 | `Nenhum microcontrolador STM32 detectado` | ST-Link com outro PID ou adaptador USB-TTL | Passe `--port COMx` |
 | Tela em `PAUSADO: ESTEIRA PARADA` com a esteira girando | Firmware antigo (< 1.1.0) sem reenvio do estado, ou motor desligado do ponto de vista do STM32 (PD0) | Grave o firmware pelo launcher e confira no `bridge_example` (comando `v`) se chega `0xB1` |
 | Visão detectando com a esteira parada | Firmware antigo (< 1.1.0), ou o STM32 acha que o motor está ligado (PD0) | Grave o firmware 1.1.0 ou mais novo. Com a esteira parada, a tela tem que mostrar `PAUSADO`. Se não mostrar, confira no `bridge_example` (comando `v`) e veja a pendência 1 da §10 (polaridade do PD0) |
-| InovaLink conta 2 para um único círculo | Visão < 2.4.0: o mesmo círculo era sinalizado de novo quando a esteira voltava a andar com ele na ROI | Atualize para a visão 2.4.0 ou mais nova (**Compilar tudo** no launcher) |
+| InovaLink conta 2 ou servo atua 2 vezes para um único círculo | Visão < 2.5.0: o mesmo círculo era sinalizado de novo, ou o `0xA0` saía no meio do ciclo do servo | Atualize para a visão 2.5.0 ou mais nova (**Compilar tudo** no launcher). No log, cada objeto deve gerar exatamente um `0xA1` e, depois de `esteira voltou a andar`, um `0xA0` |
 | ROI diferente do padrão 500/260/380/380 | `roi_config.yml` antigo na pasta `visao/` | Apague o arquivo ou ajuste as trackbars e salve com `s` |
 | `Timeout aguardando ACK` | Firmware não gravado, baud diferente ou VCP sem ligação com PA9/PA10 | Teste com o `bridge_example` e confira a ligação da USART1 com o ST-Link |
 | Build do firmware no CubeIDE falha com "No such file" | Caminho com espaço ou acento ("Apresentação Esteira") | Use o botão **Gravar no STM32** do launcher, que aceita esse caminho, ou copie `firmware_stm32/` para um caminho sem espaços |
