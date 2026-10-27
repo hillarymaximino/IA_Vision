@@ -1,6 +1,9 @@
 # Normaliza fim de linha no repositorio (LF); cada SO faz checkout no seu padrao.
 * text=auto
 
+# Scripts de shell precisam de LF ate quando o checkout e feito no Windows
+*.sh text eol=lf
+
 # Binarios: nunca converter nem tentar diff textual
 *.onnx binary
 *.zip  binary

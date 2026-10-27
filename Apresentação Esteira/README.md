@@ -16,12 +16,13 @@ compilado **nativamente no Windows**, e o Linux continua suportado.
 2. [Estrutura da pasta](#2-estrutura-da-pasta)
 3. [Pré-requisitos (Windows)](#3-pré-requisitos-windows)
 4. [Ordem de bring-up](#4-ordem-de-bring-up)
-5. [Build](#5-build)
-6. [Execução](#6-execução)
-7. [Protocolo PC ↔ STM32](#7-protocolo-pc--stm32)
-8. [Origem do código e alterações](#8-origem-do-código-e-alterações)
-9. [Pendências conhecidas](#9-pendências-conhecidas)
-10. [Solução de problemas](#10-solução-de-problemas)
+5. [Launcher gráfico (automação)](#5-launcher-gráfico-automação)
+6. [Build](#6-build)
+7. [Execução](#7-execução)
+8. [Protocolo PC ↔ STM32](#8-protocolo-pc--stm32)
+9. [Origem do código e alterações](#9-origem-do-código-e-alterações)
+10. [Pendências conhecidas](#10-pendências-conhecidas)
+11. [Solução de problemas](#11-solução-de-problemas)
 
 ---
 
@@ -66,8 +67,12 @@ Apresentação Esteira/
 ├── bridge_host/           # Biblioteca serial PC ↔ STM32 (Windows + Linux)
 │   ├── include/  src/
 │   └── example/           # bridge_example (terminal de teste) e serial_example
-└── firmware_stm32/        # Projeto STM32CubeIDE (STM32F407VET6)
-    └── README.md          # Pinagem, timers e detalhes do firmware
+├── firmware_stm32/        # Projeto STM32CubeIDE (STM32F407VET6)
+│   └── README.md          # Pinagem, timers e detalhes do firmware
+└── tools/                 # Launcher gráfico PySide6 (ver §5)
+    ├── sicov-launcher.sh  # Entrada no Linux
+    ├── requirements.txt
+    └── sicov_launcher/
 ```
 
 ---
@@ -106,7 +111,55 @@ Suba o sistema uma camada por vez. Assim, cada problema aparece isolado.
 
 ---
 
-## 5. Build
+## 5. Launcher gráfico (automação)
+
+O `tools/sicov_launcher` é uma interface em **PySide6** que automatiza tudo o que
+este README descreve, tanto no Linux quanto no Windows: verificar e instalar dependências,
+compilar, rodar a visão, abrir o terminal da bridge e testar o handshake com o STM32.
+
+**Linux** (de dentro de `Apresentação Esteira/`):
+
+```bash
+sh tools/sicov-launcher.sh
+```
+
+**Windows:**
+
+```powershell
+python tools\sicov_launcher
+```
+
+**Na primeira execução**, o launcher instala sozinho o que precisa:
+
+| O que falta | Como é instalado |
+| :--- | :--- |
+| `python3` (Linux) | O `sicov-launcher.sh` pergunta e instala via apt, dnf ou pacman |
+| PySide6 | Fica num ambiente virtual em `tools/.venv`, criado automaticamente. No Ubuntu/Debian, se faltar o `python3-venv`, ele pergunta antes de instalar |
+| `libxcb-cursor0` (exigida pelo Qt 6.5+ no X11) | Pergunta antes de instalar |
+
+**Pela janela**, o botão **Instalar dependências** cuida do resto:
+- **CMake ≥ 3.21:** instalado via pip no venv, sem sudo, o que funciona até em distros com CMake antigo.
+- **Compilador e OpenCV:** pacotes `build-essential`, `pkg-config` e `libopencv-dev`, ou os equivalentes no dnf e no pacman. O launcher pede a senha de administrador pela janela do sistema (`pkexec`).
+- **Grupo `dialout`:** o launcher adiciona o seu usuário. A permissão só vale depois de sair da sessão e entrar de novo.
+
+Antes de executar, uma janela de confirmação mostra exatamente o que vai ser feito.
+O **Galaxy SDK** é proprietário e não tem pacote: o launcher verifica se ele existe e indica onde baixar.
+
+| Botão | O que faz |
+| :--- | :--- |
+| Verificar ambiente | CMake, compilador, OpenCV, Galaxy SDK, modelo, porta serial e grupo dialout, com a solução de cada item pendente |
+| Extrair modelo do zip | Copia o `yolo11_formas.onnx` de `../Vision_Geometrica (Cópia).zip` para `visao/models/` |
+| Compilar tudo / só a bridge | `cmake --preset ...` seguido de `cmake --build`, com os caminhos preenchidos na tela |
+| Rodar visão | Executa o `VisionTest` a partir de `visao/`, com `--model`, `--camera-sn` e `--port` |
+| Terminal da bridge | Abre o `bridge_example`. A caixa de texto embaixo do log envia comandos (`1`, `0`, `v`, `s`, `q`) |
+| Testar handshake com o STM32 | Envia `0xA1` e `0xA0` automaticamente e só dá sucesso se os dois receberem ACK |
+| Fluxo completo | Verificar, instalar o que faltar, compilar tudo e testar o STM32, em sequência. Para no primeiro erro |
+
+As configurações (caminhos, porta e SN da câmera) ficam salvas entre execuções.
+
+---
+
+## 6. Build
 
 Use um terminal **"Developer PowerShell for VS 2022"**, na raiz desta pasta:
 
@@ -134,7 +187,7 @@ No Linux, use `cmake --preset linux` e depois `cmake --build --preset linux`.
 
 ---
 
-## 6. Execução
+## 7. Execução
 
 O `VisionTest` procura `models/` e grava `roi_config.yml` **na pasta de execução**.
 Por isso, rode o programa de dentro de `visao/`:
@@ -161,7 +214,7 @@ e usar o comando `s`.
 As trackbars ajustam a ROI ao vivo.
 
 > **Inicie o `VisionTest` antes de ligar ou resetar o STM32.** O firmware só envia
-> o `0xB1` inicial no boot (ver §9). Se o PC abrir depois, a tela fica em
+> o `0xB1` inicial no boot (ver §10). Se o PC abrir depois, a tela fica em
 > `PAUSADO PELO STM32` até você apertar RESET na placa.
 
 Terminal de teste da bridge:
@@ -172,7 +225,7 @@ Terminal de teste da bridge:
 
 ---
 
-## 7. Protocolo PC ↔ STM32
+## 8. Protocolo PC ↔ STM32
 
 | Byte | Sentido | Significado |
 | :---: | :---: | :--- |
@@ -186,7 +239,7 @@ A pinagem completa e os detalhes dos timers estão em [`firmware_stm32/README.md
 
 ---
 
-## 8. Origem do código e alterações
+## 9. Origem do código e alterações
 
 | Pasta | Origem |
 | :--- | :--- |
@@ -224,7 +277,7 @@ A pinagem completa e os detalhes dos timers estão em [`firmware_stm32/README.md
 
 ---
 
-## 9. Pendências conhecidas
+## 10. Pendências conhecidas
 
 Estes pontos ficam documentados em vez de alterados, porque mudam o comportamento
 da esteira e precisam ser validados na bancada:
@@ -237,7 +290,7 @@ da esteira e precisam ser validados na bancada:
 
 ---
 
-## 10. Solução de problemas
+## 11. Solução de problemas
 
 | Sintoma | Causa provável | O que fazer |
 | :--- | :--- | :--- |

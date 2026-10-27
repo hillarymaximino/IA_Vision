@@ -13,3 +13,7 @@ roi_config.yml
 .vs/
 .vscode/
 *.user
+
+# Ambiente virtual do launcher (criado automaticamente)
+tools/.venv/
+__pycache__/
