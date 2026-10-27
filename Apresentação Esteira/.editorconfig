@@ -1,0 +1,21 @@
+root = true
+
+[*]
+charset = utf-8
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{json,yml,yaml}]
+indent_size = 2
+
+[{Makefile,*.mk}]
+indent_style = tab
+
+# Codigo gerado pelo STM32CubeMX/HAL: preserva o estilo original (tabs/espacos)
+[firmware_stm32/**]
+indent_style = unset
+indent_size = unset
+trim_trailing_whitespace = unset
+insert_final_newline = unset

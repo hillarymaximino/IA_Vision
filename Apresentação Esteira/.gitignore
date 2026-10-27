@@ -1,0 +1,15 @@
+# Saida de build (CMake presets e STM32CubeIDE)
+build/
+firmware_stm32/Debug/
+firmware_stm32/Release/
+
+# Modelo da IA: binario grande, distribuido fora do Git (ver README)
+*.onnx
+
+# Calibracao local da ROI, gerada em tempo de execucao (tecla 's')
+roi_config.yml
+
+# IDEs
+.vs/
+.vscode/
+*.user
