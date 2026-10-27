@@ -147,6 +147,7 @@ def check_model(cfg: LauncherConfig, layout: ProjectLayout) -> CheckResult:
 def check_serial(cfg: LauncherConfig) -> list[CheckResult]:
     results: list[CheckResult] = []
     port = cfg.serial_port
+    port_accessible = False
 
     if not port:
         results.append(CheckResult("Porta serial", False, "nenhuma porta selecionada",
@@ -157,9 +158,10 @@ def check_serial(cfg: LauncherConfig) -> list[CheckResult]:
         results.append(CheckResult("Porta serial", False, f"{port} nao existe",
                                    "Confira o cabo USB e o ST-Link", {Scope.SERIAL}))
     else:
-        ok = os.access(port, os.R_OK | os.W_OK)
-        results.append(CheckResult("Porta serial", ok, f"{port} {'acessivel' if ok else 'sem permissao'}",
-                                   "" if ok else "Veja o item 'Grupo dialout'", {Scope.SERIAL}))
+        port_accessible = os.access(port, os.R_OK | os.W_OK)
+        results.append(CheckResult("Porta serial", port_accessible,
+                                   f"{port} {'acessivel' if port_accessible else 'sem permissao'}",
+                                   "" if port_accessible else "Veja o item 'Grupo dialout'", {Scope.SERIAL}))
 
     if not IS_WINDOWS:
         import grp  # disponivel apenas em POSIX
@@ -170,10 +172,18 @@ def check_serial(cfg: LauncherConfig) -> list[CheckResult]:
             dialout_gid = None
         # os.getgroups() reflete a sessao atual: apos o usermod e preciso relogar
         in_group = dialout_gid is not None and dialout_gid in os.getgroups()
-        results.append(CheckResult("Grupo dialout", in_group,
-                                   "usuario no grupo" if in_group else "usuario fora do grupo nesta sessao",
-                                   "" if in_group else "Use 'Instalar dependencias' e depois faca logout/login",
-                                   {Scope.SERIAL}, None if in_group else Fix.DIALOUT))
+        if in_group:
+            results.append(CheckResult("Grupo dialout", True, "usuario no grupo", scopes={Scope.SERIAL}))
+        elif port_accessible:
+            # O grupo e so um meio de ter acesso a porta. Muitas distros ja liberam o
+            # ST-Link ao usuario logado (regras udev/ACL), entao nao ha o que exigir.
+            results.append(CheckResult("Grupo dialout", True,
+                                       "fora do grupo, mas a porta ja e acessivel (permissao via udev); "
+                                       "nao e necessario", scopes={Scope.SERIAL}))
+        else:
+            results.append(CheckResult("Grupo dialout", False, "usuario fora do grupo nesta sessao",
+                                       "Use 'Instalar dependencias' e depois faca logout/login",
+                                       {Scope.SERIAL}, Fix.DIALOUT))
     return results
 
 
