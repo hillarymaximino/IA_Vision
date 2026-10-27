@@ -4,6 +4,7 @@
  * @addtogroup APP_MAIN
  * @brief   Ponto de entrada simplificado da aplicacao SICOV.
  * @author  Gonçalves
+ * @author  Luiz Neto
  * @details
  * \n <b>Grupo de Pesquisa:</b> ASSERT - IFPB
  * \n <b>Projeto:</b> SICOV

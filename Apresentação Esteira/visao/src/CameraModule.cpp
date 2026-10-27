@@ -4,6 +4,7 @@
  * @addtogroup CAMERA
  * @brief   Implementacao nativa Linux do modulo de captura da camera Daheng MER2-302-37GM-P.
  * @author  Gonçalves
+ * @author  Luiz Neto
  * @details
  * \n <b>Grupo de Pesquisa:</b> ASSERT - IFPB
  * \n <b>Protocolo:</b> GigE Vision via Galaxy SDK nativo (GxIAPI Linux).

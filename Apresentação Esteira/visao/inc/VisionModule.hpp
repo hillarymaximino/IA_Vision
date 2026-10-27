@@ -4,6 +4,7 @@
  * @addtogroup VISION
  * @brief   Interface do pipeline de IA desacoplado (Consumidor).
  * @author  Gonçalves
+ * @author  Luiz Neto
  * @details
  * \n <b>Grupo de Pesquisa:</b> ASSERT - IFPB
  * \n <b>Projeto:</b> SICOV

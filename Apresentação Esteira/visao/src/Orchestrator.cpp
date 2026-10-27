@@ -4,6 +4,7 @@
  * @addtogroup ORCHESTRATOR
  * @brief   Implementacao do Orquestrador: gestao do pipeline, unificacao da ROI, HUD e STM32.
  * @author  Gonçalves
+ * @author  Luiz Neto
  * @details
  * \n <b>Regra de Arquitetura:</b> Fonte Unica da Verdade (Single Source of Truth).
  * \n O enquadramento (ROI) e calculado exclusivamente aqui, a partir das variaveis

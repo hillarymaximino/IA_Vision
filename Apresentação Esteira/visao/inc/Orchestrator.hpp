@@ -4,6 +4,7 @@
  * @addtogroup ORCHESTRATOR
  * @brief   Interface do orquestrador central e coordenador de fluxo do SICOV.
  * @author  Gonçalves
+ * @author  Luiz Neto
  * @details
  * \n <b>Grupo de Pesquisa:</b> ASSERT - IFPB
  * \n <b>Projeto:</b> SICOV

@@ -4,6 +4,7 @@
  * @addtogroup CAMERA
  * @brief   Interface do driver de captura GigE Vision para cameras Daheng Imaging.
  * @author  Gonçalves
+ * @author  Luiz Neto
  * @details
  * \n <b>Grupo de Pesquisa:</b> ASSERT - IFPB
  * \n <b>Projeto:</b> SICOV

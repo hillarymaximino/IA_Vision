@@ -4,6 +4,7 @@
  * @addtogroup VISION
  * @brief   Implementacao do pipeline de IA desacoplado (Consumidor).
  * @author  Gonçalves
+ * @author  Luiz Neto
  * @details
  * \n <b>Hardware:</b> NVIDIA GeForce RTX 4050 (Aceleração CUDA FP16).
  * \n Eliminada qualquer duplicacao de ROI: O modulo processa o frame completo.
