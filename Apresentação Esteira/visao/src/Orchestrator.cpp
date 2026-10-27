@@ -65,6 +65,9 @@ static constexpr int dCONFIRMACOES_SAIDA = 3;
 /** @brief Tempo maximo esperando a esteira parar apos o 0xA1; depois disso envia 0xA0. */
 static constexpr int64_t dTIMEOUT_SEM_PARADA_MS = 5000;
 
+/** @brief Intervalo entre tentativas de reconectar ao STM32 apos uma queda do USB. */
+static constexpr int64_t dINTERVALO_RECONEXAO_MS = 2000;
+
 /*******************************************************************************
  * VARIAVEIS DA ROI E SINAIS DE CONTROLE
  ******************************************************************************/
@@ -78,6 +81,9 @@ static int gRoiH  = 380;   /**< Altura da ROI (380 = 38% do frame).             
 
 /** @brief Sinal global ativo enquanto um CIRCULO e reconhecido na ROI. */
 static std::atomic<bool> gSinalCirculo{false};
+
+/** @brief Porta pedida na inicializacao, reutilizada nas reconexoes ("" = auto-deteccao). */
+static std::string gPortaSerial;
 
 /*******************************************************************************
  * PROTOTIPOS LOCAIS
@@ -122,6 +128,7 @@ bool Orchestrator_Init(const std::string& modelPath, const std::string& cameraSN
         return false;
     }
 
+    gPortaSerial = serialPort;
     if (!bridge::conectar(serialPort))
     {
         std::cerr << "[ORCHESTRATOR] Falha critica ao conectar ao STM32." << std::endl;
@@ -178,6 +185,8 @@ void Orchestrator_Run(void)
     SinalObjeto sinal(dCONFIRMACOES_ENTRADA, dCONFIRMACOES_SAIDA, dTIMEOUT_SEM_PARADA_MS);
     bool varreduraAnterior = false;
     bool detectandoAnterior = true;
+    bool avisouQuedaStm32 = false;
+    int64_t ultimaReconexaoMs = 0;
     uint64_t ultimaSequencia = 0;   // ultima inferencia ja contabilizada no sinal
 
     std::cout << "[ORCHESTRATOR] Pipeline ativo. 's' = salvar ROI | ESC = finalizar." << std::endl;
@@ -189,6 +198,34 @@ void Orchestrator_Run(void)
         {
             // Permissao do STM32: so com a esteira em movimento. Falso tambem se o STM32
             // estiver desconectado ou sem enviar o estado ha mais de 2,5 s (fail-safe).
+            // Queda do USB do ST-Link (ruido do servo/motor): reconecta sozinho. Enquanto
+            // isso esta_varredura_ativa() e false (fail-safe) e a visao fica pausada.
+            const bool stm32Conectado = bridge::esta_conectado();
+            if (!stm32Conectado)
+            {
+                if (!avisouQuedaStm32)
+                {
+                    std::cout << "[STM32] Conexao perdida. Tentando reconectar a cada "
+                              << dINTERVALO_RECONEXAO_MS / 1000 << " s..." << std::endl;
+                    avisouQuedaStm32 = true;
+                }
+                if (AgoraMs() - ultimaReconexaoMs >= dINTERVALO_RECONEXAO_MS)
+                {
+                    ultimaReconexaoMs = AgoraMs();
+                    if (bridge::conectar(gPortaSerial))
+                    {
+                        std::cout << "[STM32] Reconectado em " << bridge::obter_porta_conectada() << "." << std::endl;
+                        avisouQuedaStm32 = false;
+                        // O 0xA0 pode ter se perdido na queda: garante o PD7 em 1, a menos
+                        // que um objeto sinalizado ainda espere a esteira parar
+                        if (sinal.estado() != SinalObjeto::Estado::Sinalizado)
+                        {
+                            ExecutarAcao(SinalObjeto::Acao::EnviarSemObjeto, "ressincronizando apos reconexao");
+                        }
+                    }
+                }
+            }
+
             const bool varreduraAtiva = bridge::esta_varredura_ativa();
 
             if (varreduraAtiva != varreduraAnterior)
@@ -229,7 +266,12 @@ void Orchestrator_Run(void)
                 // 2. Sem deteccao: esteira parada, ou circulo ja sinalizado esperando a parada
                 tela = frame;
                 DesenharZonaInspecao(tela);
-                if (!varreduraAtiva)
+                if (!stm32Conectado)
+                {
+                    cv::putText(tela, "STM32 DESCONECTADO: RECONECTANDO...", cv::Point(10, 30),
+                                cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 0, 255), 2);
+                }
+                else if (!varreduraAtiva)
                 {
                     cv::putText(tela, "PAUSADO: ESTEIRA PARADA (AGUARDANDO 0xB1)", cv::Point(10, 30),
                                 cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 165, 255), 2);
