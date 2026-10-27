@@ -84,10 +84,22 @@ def list_serial_ports() -> list[tuple[str, str]]:
             return []
         return [(p.device, p.description or "") for p in list_ports.comports()]
 
-    # /dev/serial/by-id da nomes estaveis com fabricante (ex: usb-STMicroelectronics_STLINK...)
-    by_id = {
-        os.path.realpath(link): os.path.basename(link)
-        for link in glob.glob("/dev/serial/by-id/*")
-    }
-    ports = sorted(glob.glob("/dev/ttyACM*") + glob.glob("/dev/ttyUSB*"))
-    return [(port, by_id.get(port, "")) for port in ports]
+    # /dev/serial/by-id da nomes ESTAVEIS com fabricante e serie (ex:
+    # usb-STMicroelectronics_STLINK-V3_...-if02). Quando o USB cai e volta, o ttyACM
+    # muda de numero (ttyACM0 -> ttyACM1), mas o link by-id continua o mesmo: por isso
+    # ele e oferecido como porta, com o ttyACM atual so na descricao.
+    ports: list[tuple[str, str]] = []
+    covered: set[str] = set()
+    for link in sorted(glob.glob("/dev/serial/by-id/*")):
+        target = os.path.realpath(link)
+        covered.add(target)
+        ports.append((link, f"({os.path.basename(target)})"))
+    for port in sorted(glob.glob("/dev/ttyACM*") + glob.glob("/dev/ttyUSB*")):
+        if port not in covered:
+            ports.append((port, ""))
+    return ports
+
+
+def is_stlink(port: str, description: str) -> bool:
+    text = f"{port} {description}".upper()
+    return "STLINK" in text or "STMICRO" in text

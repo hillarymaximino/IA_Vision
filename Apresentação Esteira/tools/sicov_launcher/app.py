@@ -22,7 +22,7 @@ from . import __version__
 from .checks import CheckResult, LauncherConfig, Scope, blocking_failures, run_all
 from .firmware import Flasher, append_tools_to_path, find_flasher
 from .installer import GALAXY_HINT, build_plan
-from .project import IS_WINDOWS, MODEL_FILENAME, ProjectLayout, list_serial_ports
+from .project import IS_WINDOWS, MODEL_FILENAME, ProjectLayout, is_stlink, list_serial_ports
 from .runner import Exchange, ExpectScript, LogKind, ProcessRunner, Step
 
 _LOG_COLORS = {
@@ -264,16 +264,29 @@ class MainWindow(QMainWindow):
 
     # ============================================================ acoes
     def refresh_ports(self) -> None:
-        current = self.port_combo.currentText() or getattr(self, "_saved_port", "")
+        current = (self.port_combo.currentText() or getattr(self, "_saved_port", "")).split("  ")[0].strip()
+        ports = list_serial_ports()
         self.port_combo.clear()
-        for port, description in list_serial_ports():
+        for port, description in ports:
             self.port_combo.addItem(f"{port}  {description}".strip())
+
+        def select(predicate) -> bool:
+            for index, (port, description) in enumerate(ports):
+                if predicate(port, description):
+                    self.port_combo.setCurrentIndex(index)
+                    return True
+            return False
+
         if current:
-            index = self.port_combo.findText(current, Qt.MatchFlag.MatchStartsWith)
-            if index >= 0:
-                self.port_combo.setCurrentIndex(index)
-            else:
+            current_name = os.path.basename(current)
+            # 1) mesma porta; 2) porta salva como ttyACMx que hoje tem link by-id estavel;
+            # 3) a porta salva sumiu (USB reconectou com outro numero): usa o ST-Link
+            if not (select(lambda p, d: p == current)
+                    or select(lambda p, d: d == f"({current_name})")
+                    or (not os.path.exists(current) and select(is_stlink))):
                 self.port_combo.setEditText(current)
+        else:
+            select(is_stlink)
         if self.port_combo.count() == 0 and not current:
             hint = "COM5" if IS_WINDOWS else "/dev/ttyACM0"
             self.port_combo.lineEdit().setPlaceholderText(f"nenhuma porta encontrada (ex: {hint})")
