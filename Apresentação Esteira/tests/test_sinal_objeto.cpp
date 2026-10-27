@@ -2,10 +2,15 @@
  * @file    test_sinal_objeto.cpp
  * @brief   Testes da maquina de estados SinalObjeto (visao/inc/SinalObjeto.hpp).
  *
- * Simula a esteira e registra o que a InovaLink veria no PD7. Regras protegidas:
- *  - UM 0xA1 por objeto fisico (uma descida do PD7 => um ciclo de servo);
- *  - depois do 0xA1 a visao para de detectar ate a esteira voltar a andar;
- *  - nada e enviado com a esteira parada; o 0xA0 so sai quando ela volta a andar.
+ * Simula a esteira COM a InovaLink, como observado na bancada:
+ *  - PD7 desce (0xA1)  -> InovaLink para o motor e aciona o servo (STM32 envia 0xB0);
+ *  - PD7 sobe  (0xA0)  -> InovaLink devolve o servo e religa o motor (STM32 envia 0xB1).
+ *
+ * Regras protegidas:
+ *  - UM ciclo de servo por objeto fisico (o mesmo circulo nao e contado de novo);
+ *  - o ciclo SEMPRE termina: servo volta e esteira religa (a versao 2.5.0 travava,
+ *    porque segurava o PD7 em 0 ate a esteira andar);
+ *  - depois do 0xA1 a visao para de detectar; com a esteira parada nada e enviado.
  *
  * Sem dependencias (nem OpenCV): roda com `ctest` em qualquer maquina.
  */
@@ -27,29 +32,45 @@ constexpr int kSaida = 3;
 constexpr int64_t kTimeoutMs = 5000;
 constexpr int64_t kPeriodoInferenciaMs = 100;
 
-struct Esteira
+struct Bancada
 {
     SinalObjeto sinal{kEntrada, kSaida, kTimeoutMs};
     int64_t agoraMs = 0;
-    bool andando = true;
-    int descidasPd7 = 0;       // o que a InovaLink conta (cada uma dispara o servo)
-    int subidasPd7 = 0;
-    bool pd7Baixo = false;
-    int enviosComEsteiraParada = 0;
 
-    void aplicar(Acao acao)
+    // Estado fisico
+    bool pd7Baixo = false;
+    bool motorLigado = true;
+    bool servoAtivo = false;
+    bool inovaLinkAutomatica = true;   // false: simula controladora que nao reage
+
+    // O que observamos
+    int ciclosServo = 0;
+    int enviosComEsteiraParada = 0;    // envios ALEM do 0xA0 da propria parada
+
+    void aplicar(Acao acao, bool naTransicaoDaParada = false)
     {
         if (acao == Acao::Nenhuma) return;
-        if (!andando) enviosComEsteiraParada++;
-        if (acao == Acao::EnviarObjetoEncontrado)
+        if (!motorLigado && !naTransicaoDaParada) enviosComEsteiraParada++;
+        pd7Baixo = (acao == Acao::EnviarObjetoEncontrado);
+        reagirInovaLink();
+    }
+
+    /** InovaLink: reage ao nivel do PD7 e o STM32 informa o estado do motor. */
+    void reagirInovaLink()
+    {
+        if (!inovaLinkAutomatica) return;
+        if (pd7Baixo && motorLigado)
         {
-            if (!pd7Baixo) descidasPd7++;
-            pd7Baixo = true;
+            motorLigado = false;          // para a esteira
+            servoAtivo = true;            // aciona o servo
+            ciclosServo++;
+            aplicar(sinal.aoPausar(), true);   // STM32 -> 0xB0
         }
-        else
+        else if (!pd7Baixo && !motorLigado)
         {
-            if (pd7Baixo) subidasPd7++;
-            pd7Baixo = false;
+            servoAtivo = false;           // devolve o servo
+            motorLigado = true;           // religa a esteira
+            sinal.aoRetomar();            // STM32 -> 0xB1
         }
     }
 
@@ -64,15 +85,12 @@ struct Esteira
         {
             agoraMs += kPeriodoInferenciaMs;
             aplicar(sinal.verificarTimeout(agoraMs));
-            if (andando && sinal.detectando())
+            if (motorLigado && sinal.detectando())
             {
                 aplicar(sinal.aoNovaInferencia(c == 'C', agoraMs));
             }
         }
     }
-
-    void parar() { andando = false; sinal.aoPausar(); }
-    void andar() { andando = true; aplicar(sinal.aoRetomar()); }
 };
 
 int gFalhas = 0;
@@ -88,76 +106,56 @@ void verificar(bool ok, const char* descricao)
 int main()
 {
     {
-        // Ciclo completo: circulo -> 0xA1 -> esteira para -> servo -> esteira anda
-        Esteira e;
-        e.inferencias("..CC");
-        verificar(e.descidasPd7 == 1 && e.pd7Baixo, "circulo confirmado envia 0xA1 (PD7 = 0)");
-        verificar(!e.sinal.detectando(), "apos o 0xA1 a visao para de detectar");
-        e.inferencias("CCCC");             // circulo continua na ROI ate a esteira parar
-        e.parar();
-        verificar(e.pd7Baixo, "esteira parada: PD7 continua em 0 (sem 0xA0 no meio do servo)");
-        e.inferencias("CCCCCCCC");         // servo atuando; IA nem e consultada
-        e.andar();
-        verificar(!e.pd7Baixo && e.subidasPd7 == 1, "esteira volta a andar: 0xA0 (PD7 = 1)");
-        e.inferencias("CCCCCC....");       // mesmo circulo ainda na ROI, depois sai
-        verificar(e.descidasPd7 == 1, "mesmo circulo apos a esteira voltar: conta 1 (servo 1x)");
-        verificar(e.enviosComEsteiraParada == 0, "nenhum comando enviado com a esteira parada");
+        Bancada b;
+        b.inferencias("..CC");     // circulo confirmado -> 0xA1 -> InovaLink para e aciona o servo
+        verificar(b.ciclosServo == 1, "circulo confirmado: servo atua 1 vez");
+        verificar(!b.servoAtivo && b.motorLigado,
+                  "ciclo termina: servo volta e esteira religa (2.5.0 travava aqui)");
+        b.inferencias("CCCCCC....");   // mesmo circulo ainda na ROI apos religar, depois sai
+        verificar(b.ciclosServo == 1, "mesmo circulo apos a esteira religar: servo continua em 1 ciclo");
+        verificar(b.enviosComEsteiraParada == 0, "nada enviado com a esteira parada alem do 0xA0 da parada");
     }
     {
-        // Deteccao com a esteira desligada e ignorada
-        Esteira e;
-        e.parar();
-        e.inferencias("CCCCCCCC");
-        verificar(e.descidasPd7 == 0 && e.enviosComEsteiraParada == 0,
+        Bancada b;
+        b.motorLigado = false;          // esteira desligada pelo operador
+        b.inovaLinkAutomatica = false;
+        b.sinal.aoPausar();
+        b.inferencias("CCCCCCCC");
+        verificar(b.ciclosServo == 0 && !b.pd7Baixo && b.enviosComEsteiraParada == 0,
                   "esteira desligada: circulo ignorado, nada enviado");
     }
     {
-        // Dois objetos separados = dois ciclos de servo
-        Esteira e;
-        e.inferencias("..CC"); e.parar(); e.andar(); e.inferencias("CC....");
-        e.inferencias("..CC"); e.parar(); e.andar(); e.inferencias("....");
-        verificar(e.descidasPd7 == 2, "dois objetos separados contam 2");
+        Bancada b;
+        b.inferencias("..CC" "CC...." "..CC" "CC....");
+        verificar(b.ciclosServo == 2, "dois objetos separados: 2 ciclos de servo");
     }
     {
-        // Servo tira a peca: rearma logo que a ROI estiver vazia
-        Esteira e;
-        e.inferencias("CC"); e.parar(); e.andar();
-        e.inferencias("...");
-        verificar(e.sinal.estado() == Estado::Pronto, "ROI vazia apos a esteira voltar rearma");
+        Bancada b;
+        b.inferencias("CC...");         // servo tirou a peca; ROI vazia ao religar
+        verificar(b.sinal.estado() == Estado::Pronto, "ROI vazia apos religar rearma o sinal");
     }
     {
-        // Inferencia que "pisca" antes da confirmacao nao dispara
-        Esteira e;
-        e.inferencias("...C...C...");
-        verificar(e.descidasPd7 == 0, "falso positivo isolado nao envia 0xA1");
+        Bancada b;
+        b.inferencias("...C...C...");
+        verificar(b.ciclosServo == 0, "falso positivo isolado nao aciona o servo");
     }
     {
-        // Pausa no meio da confirmacao zera a contagem
-        Esteira e;
-        e.inferencias("C"); e.parar(); e.andar(); e.inferencias("C.");
-        verificar(e.descidasPd7 == 0, "contagem parcial e zerada na pausa");
+        Bancada b;
+        b.inovaLinkAutomatica = false;  // controladora nao para a esteira
+        b.inferencias("CC");
+        verificar(b.pd7Baixo, "0xA1 enviado (PD7 = 0)");
+        b.inferencias(std::string(kTimeoutMs / kPeriodoInferenciaMs, 'C'));
+        verificar(!b.pd7Baixo, "sem parada em 5 s: 0xA0 automatico (nao fica travado)");
+        b.inferencias("CCCC");
+        verificar(!b.pd7Baixo, "apos o timeout, o mesmo circulo nao gera novo 0xA1");
+        b.inferencias("....CC");
+        verificar(b.pd7Baixo, "objeto seguinte (ROI esvaziou) gera 0xA1");
     }
     {
-        // Controladora nao para a esteira: libera o PD7 apos o timeout e rearma depois
-        Esteira e;
-        e.inferencias("CC");
-        e.inferencias(std::string(kTimeoutMs / kPeriodoInferenciaMs, 'C'));
-        verificar(!e.pd7Baixo && e.descidasPd7 == 1, "sem parada em 5 s: 0xA0 automatico, sem novo 0xA1");
-        e.inferencias("....CC");
-        verificar(e.descidasPd7 == 2, "apos o timeout, proximo objeto (ROI esvaziou) conta");
-    }
-    {
-        // Varias paradas/partidas com o objeto parado na ROI: um unico 0xA1
-        Esteira e;
-        e.inferencias("CC");
-        for (int i = 0; i < 3; ++i)
-        {
-            e.parar();
-            e.inferencias("CCC");
-            e.andar();
-            e.inferencias("CCC");
-        }
-        verificar(e.descidasPd7 == 1, "3 paradas com o objeto na ROI contam 1");
+        Bancada b;
+        b.inferencias("CC");
+        for (int i = 0; i < 5; ++i) b.inferencias("CCC");   // objeto continua na ROI
+        verificar(b.ciclosServo == 1, "objeto parado na ROI por varios ciclos: 1 ciclo de servo");
     }
 
     std::printf("\n%s\n", gFalhas ? "RESULTADO: FALHOU" : "RESULTADO: todos os casos passaram");

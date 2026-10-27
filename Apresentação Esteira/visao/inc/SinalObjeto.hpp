@@ -10,23 +10,24 @@
  *
  * Regra da esteira (um ciclo de servo por objeto):
  *  1. Circulo confirmado na ROI: envia 0xA1 UMA vez e PARA de detectar.
- *  2. Esteira parada (0xB0): nao envia nada; o PD7 fica em 0 durante todo o ciclo
- *     do servo na InovaLink. Deteccoes nesse periodo sao ignoradas.
- *  3. Esteira volta a andar (0xB1): so entao envia 0xA0 (PD7 = 1), como no protocolo
- *     original. Volta a detectar, mas o objeto recem-tratado so rearma o sinal depois
- *     de sair da ROI (evita contar o mesmo circulo de novo).
- *  4. Seguranca: se a esteira nao parar em `timeoutSemParadaMs` apos o 0xA1, libera o
- *     PD7 (0xA0) para o sistema nao ficar travado.
+ *  2. Esteira parou (0xB0): envia 0xA0 (PD7 = 1). A InovaLink so devolve o servo e
+ *     religa o motor depois que o PD7 volta para 1; segurar o PD7 em 0 ate a esteira
+ *     andar trava os dois lados (servo parado para sempre, visto na versao 2.5.0).
+ *     Com a esteira parada, deteccoes sao ignoradas e nada mais e enviado.
+ *  3. Esteira volta a andar (0xB1): volta a detectar, mas o objeto recem-tratado so
+ *     rearma o sinal depois de sair da ROI (evita contar o mesmo circulo de novo).
+ *  4. Seguranca: se a esteira nao parar em `timeoutSemParadaMs` apos o 0xA1, libera
+ *     o PD7 (0xA0) para o sistema nao ficar travado.
  *
  * \code
  *           circulo em N_ENTRADA inferencias seguidas (0xA1)
  *  PRONTO ----------------------------------------------> SINALIZADO
  *    ^                                                      |  (nao detecta)
- *    |                                       0xB0 recebido  |   timeout sem parada
+ *    |                                 0xB0 recebido (0xA0) |   timeout sem parada
  *    |                                                      v   (0xA0) ------------+
  *    |                                              ESTEIRA_PARADA                  |
  *    |                                               (nao detecta)                  |
- *    |                                                      |  0xB1 recebido (0xA0) |
+ *    |                                                      |  0xB1 recebido        |
  *    |   ROI sem circulo em N_SAIDA inferencias             v                       |
  *    +------------------------------------------- AGUARDANDO_SAIDA <-----------------+
  * \endcode
@@ -49,7 +50,7 @@ public:
     {
         Pronto,           /**< Detectando; o proximo circulo confirmado gera 0xA1. */
         Sinalizado,       /**< 0xA1 enviado; deteccao parada, esperando a esteira parar. */
-        EsteiraParada,    /**< Esteira parada apos o 0xA1 (servo atuando); nada e enviado. */
+        EsteiraParada,    /**< 0xA0 enviado na parada; servo atuando; nada mais e enviado. */
         AguardandoSaida   /**< Esteira andando de novo; espera o objeto sair da ROI. */
     };
 
@@ -83,7 +84,7 @@ public:
     {
         if (!detectando())
         {
-            return Acao::Nenhuma;   // regra 1/2: depois do 0xA1 nenhuma deteccao conta
+            return Acao::Nenhuma;   // depois do 0xA1 nenhuma deteccao conta
         }
 
         if (circuloNaRoi)
@@ -110,29 +111,30 @@ public:
         return Acao::Nenhuma;
     }
 
-    /** @brief A esteira parou (0xB0). Nunca envia nada: o PD7 fica como esta. */
-    void aoPausar()
+    /**
+     * @brief A esteira parou (0xB0).
+     * @return EnviarSemObjeto se havia um objeto sinalizado: devolve o PD7 para 1 para
+     *         a InovaLink completar o ciclo do servo e religar a esteira.
+     */
+    Acao aoPausar()
     {
         zerarContagem();
         if (mEstado == Estado::Sinalizado)
         {
             mEstado = Estado::EsteiraParada;
+            return Acao::EnviarSemObjeto;
         }
+        return Acao::Nenhuma;
     }
 
-    /**
-     * @brief A esteira voltou a andar (0xB1).
-     * @return EnviarSemObjeto se este e o fim do ciclo de um objeto sinalizado.
-     */
-    Acao aoRetomar()
+    /** @brief A esteira voltou a andar (0xB1): volta a detectar, sem enviar nada. */
+    void aoRetomar()
     {
         zerarContagem();
         if (mEstado == Estado::EsteiraParada)
         {
             mEstado = Estado::AguardandoSaida;
-            return Acao::EnviarSemObjeto;
         }
-        return Acao::Nenhuma;
     }
 
     /**

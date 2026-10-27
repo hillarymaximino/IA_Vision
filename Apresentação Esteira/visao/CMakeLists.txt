@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(VisionTest VERSION 2.5.1 LANGUAGES CXX)
+project(VisionTest VERSION 2.6.0 LANGUAGES CXX)
 
 # ------------------------------------------------------------------------------
 # Dependencias

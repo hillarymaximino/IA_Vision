@@ -151,8 +151,9 @@ bool Orchestrator_Init(const std::string& modelPath, const std::string& cameraSN
  *       - Outras formas: so contam em "Na zona", sem desenho.
  * \n 5. A cada inferencia NOVA, alimenta o SinalObjeto: 0xA1 apos
  *       dCONFIRMACOES_ENTRADA inferencias seguidas com circulo e a deteccao PARA.
- *       Com a esteira parada nada e enviado. Quando ela volta a andar, envia 0xA0 e
- *       volta a detectar; o objeto recem-tratado so rearma o sinal ao sair da ROI.
+ *       Quando a esteira para, envia 0xA0 (a InovaLink precisa do PD7 em 1 para
+ *       devolver o servo e religar o motor) e nada mais ate ela voltar a andar; entao
+ *       volta a detectar e o objeto recem-tratado so rearma o sinal ao sair da ROI.
  *       Um 0xA1 por objeto, um ciclo de servo por objeto.
  * \n Teclas: 's' salva a calibracao da ROI, ESC encerra.
  ******************************************************************************/
@@ -194,13 +195,14 @@ void Orchestrator_Run(void)
             {
                 if (varreduraAtiva)
                 {
-                    // Esteira voltou a andar: fim do ciclo do objeto sinalizado (0xA0)
-                    ExecutarAcao(sinal.aoRetomar(), "esteira voltou a andar");
+                    // Esteira voltou a andar: volta a detectar (objeto tratado so rearma ao sair da ROI)
+                    sinal.aoRetomar();
                 }
                 else
                 {
-                    // Esteira parou: nada e enviado; o PD7 fica em 0 durante o servo
-                    sinal.aoPausar();
+                    // Esteira parou: devolve o PD7 para 1 (0xA0). A InovaLink so devolve o
+                    // servo e religa o motor com o PD7 em 1; segura-lo em 0 trava o ciclo.
+                    ExecutarAcao(sinal.aoPausar(), "esteira parou");
                 }
                 varreduraAnterior = varreduraAtiva;
             }
@@ -217,7 +219,7 @@ void Orchestrator_Run(void)
                 Vision_Reset();
                 detectandoAnterior = detectar;
             }
-            gSinalCirculo = !sinal.detectando();
+            gSinalCirculo = (sinal.estado() == SinalObjeto::Estado::Sinalizado);   // PD7 = 0
 
             // Quadro exibido: ao vivo sem deteccao; detectando, o quadro avaliado pela IA
             cv::Mat tela;
@@ -239,8 +241,8 @@ void Orchestrator_Run(void)
                 }
                 else if (sinal.estado() == SinalObjeto::Estado::EsteiraParada)
                 {
-                    cv::putText(tela, "OBJETO SINALIZADO: SERVO EM ACAO [FLAG = 1]", cv::Point(10, 65),
-                                cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 0, 255), 2);
+                    cv::putText(tela, "OBJETO TRATADO: SERVO EM ACAO (DETECCAO PAUSADA)", cv::Point(10, 65),
+                                cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 165, 255), 2);
                 }
             }
             else
