@@ -51,6 +51,7 @@ class Step:
     env: dict[str, str] = field(default_factory=dict)
     interactive: bool = False               # habilita a caixa de entrada do log
     script: ExpectScript | None = None
+    failure_hint: str = ""                  # exibido se este passo falhar
 
 
 class _ScriptState:
@@ -260,6 +261,8 @@ class ProcessRunner(QObject):
             self._start_next()
         else:
             self._queue.clear()
+            if step.failure_hint:
+                self.log.emit(step.failure_hint, LogKind.WARNING)
             self._finish(False, f"{step.title}: terminou com codigo {exit_code}.")
 
     def _schedule_kill(self, process: QProcess, delay_ms: int = 3000) -> None:

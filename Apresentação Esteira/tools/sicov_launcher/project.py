@@ -30,6 +30,14 @@ class ProjectLayout:
         return self.root / "visao"
 
     @property
+    def firmware_dir(self) -> Path:
+        return self.root / "firmware_stm32"
+
+    def firmware_artifact(self, suffix: str) -> Path:
+        """Saida do preset 'firmware' (ex: suffix='.elf' -> build/comEdge.elf)."""
+        return self.firmware_dir / "build" / f"comEdge{suffix}"
+
+    @property
     def default_model(self) -> Path:
         return self.visao_dir / "models" / MODEL_FILENAME
 

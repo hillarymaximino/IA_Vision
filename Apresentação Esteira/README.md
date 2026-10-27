@@ -103,7 +103,7 @@ e o `VisionTest.exe` na rede privada.
 
 Suba o sistema uma camada por vez. Assim, cada problema aparece isolado.
 
-1. **Firmware:** abra `firmware_stm32/` no STM32CubeIDE (*File → Import → Existing Projects*), compile e grave pelo ST-Link.
+1. **Firmware:** no launcher, clique em **Gravar no STM32**. Ele compila e grava pelo ST-Link. Outra opção é abrir `firmware_stm32/` no STM32CubeIDE (*File → Import → Existing Projects*), compilar e gravar por lá.
 2. **Comunicação:** compile o preset `windows-bridge` e rode o `bridge_example`. Ao resetar o STM32, deve aparecer `ResumeScan (0xB1)`. Os comandos `1` e `0` precisam receber ACK.
 3. **Câmera:** confirme no *GalaxyView* que a câmera aparece e transmite imagem.
 4. **Visão completa:** compile o preset `windows` e rode o `VisionTest`.
@@ -115,7 +115,8 @@ Suba o sistema uma camada por vez. Assim, cada problema aparece isolado.
 
 O `tools/sicov_launcher` é uma interface em **PySide6** que automatiza tudo o que
 este README descreve, tanto no Linux quanto no Windows: verificar e instalar dependências,
-compilar, rodar a visão, abrir o terminal da bridge e testar o handshake com o STM32.
+compilar, rodar a visão, abrir o terminal da bridge, testar o handshake com o STM32 e
+**compilar e gravar o firmware do STM32**.
 
 **Linux** (de dentro de `Apresentação Esteira/`):
 
@@ -141,6 +142,10 @@ python tools\sicov_launcher
 - **CMake ≥ 3.21:** instalado via pip no venv, sem sudo, o que funciona até em distros com CMake antigo.
 - **Compilador e OpenCV:** pacotes `build-essential`, `pkg-config` e `libopencv-dev`, ou os equivalentes no dnf e no pacman. O launcher pede a senha de administrador pela janela do sistema (`pkexec`).
 - **Grupo `dialout`:** o launcher adiciona o seu usuário. A permissão só vale depois de sair da sessão e entrar de novo.
+- **Firmware:** `gcc-arm-none-eabi` e `libnewlib-arm-none-eabi` para compilar, e `stlink-tools` para gravar. O `stlink-tools` também instala as regras udev que liberam o ST-Link sem root (reconecte o USB depois). O Ninja vem via pip.
+
+Se o STM32CubeIDE ou o STM32CubeProgrammer estiverem instalados (`/opt/st/...` no Linux, `C:\ST\...` no Windows),
+o launcher usa o compilador ARM, o Ninja, o CMake e o `STM32_Programmer_CLI` deles e não instala nada.
 
 Antes de executar, uma janela de confirmação mostra exatamente o que vai ser feito.
 O **Galaxy SDK** é proprietário e não tem pacote: o launcher verifica se ele existe e indica onde baixar.
@@ -154,6 +159,8 @@ O **Galaxy SDK** é proprietário e não tem pacote: o launcher verifica se ele 
 | Terminal da bridge | Abre o `bridge_example`. A caixa de texto embaixo do log envia comandos (`1`, `0`, `v`, `s`, `q`) |
 | Testar handshake com o STM32 | Envia `0xA1` e `0xA0` automaticamente e só dá sucesso se os dois receberem ACK |
 | Fluxo completo | Verificar, instalar o que faltar, compilar tudo e testar o STM32, em sequência. Para no primeiro erro |
+| Compilar firmware | Compila `firmware_stm32/` para ARM (`cmake --preset firmware`) e gera `build/comEdge.elf`, `.bin` e `.hex` |
+| Gravar no STM32 | Compila e grava pelo ST-Link (SWD), verifica e reseta a placa. Usa o primeiro gravador que encontrar: STM32CubeProgrammer, `st-flash` ou OpenOCD |
 
 As configurações (caminhos, porta e SN da câmera) ficam salvas entre execuções.
 
@@ -299,5 +306,6 @@ da esteira e precisam ser validados na bancada:
 | `Nenhum microcontrolador STM32 detectado` | ST-Link com outro PID ou adaptador USB-TTL | Passe `--port COMx` |
 | Tela parada em `PAUSADO PELO STM32` | O `0xB1` do boot chegou antes do PC conectar | Aperte RESET no STM32 com o `VisionTest` aberto |
 | `Timeout aguardando ACK` | Firmware não gravado, baud diferente ou VCP sem ligação com PA9/PA10 | Teste com o `bridge_example` e confira a ligação da USART1 com o ST-Link |
-| Build do firmware falha com "No such file" | Caminho com espaço ou acento ("Apresentação Esteira") | Copie `firmware_stm32/` para um caminho sem espaços, por exemplo `C:\dev\sicov_fw` |
+| Build do firmware no CubeIDE falha com "No such file" | Caminho com espaço ou acento ("Apresentação Esteira") | Use o botão **Gravar no STM32** do launcher, que aceita esse caminho, ou copie `firmware_stm32/` para um caminho sem espaços |
+| `No debug probe detected` ao gravar | ST-Link desconectado, sem permissão USB ou ocupado | Reconecte o ST-Link, feche o debug do CubeIDE e, no Linux, reconecte depois de instalar o `stlink-tools` |
 | `opencv_world*.dll não encontrada` | DLL fora do PATH | Recompile (o pós-build copia a DLL) ou adicione `C:\opencv\build\x64\vc16\bin` ao PATH |

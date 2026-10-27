@@ -18,18 +18,26 @@ _SYSTEM_PACKAGES: dict[str, dict[Fix, list[str]]] = {
     "apt-get": {
         Fix.COMPILER: ["build-essential", "pkg-config"],
         Fix.OPENCV: ["libopencv-dev"],
+        Fix.ARM_TOOLCHAIN: ["gcc-arm-none-eabi", "libnewlib-arm-none-eabi"],
+        Fix.FLASHER: ["stlink-tools"],   # inclui as regras udev do ST-Link
     },
     "dnf": {
         Fix.COMPILER: ["gcc-c++", "make", "pkgconf-pkg-config"],
         Fix.OPENCV: ["opencv-devel"],
+        Fix.ARM_TOOLCHAIN: ["arm-none-eabi-gcc-cs", "arm-none-eabi-newlib"],
+        Fix.FLASHER: ["stlink"],
     },
     "pacman": {
         Fix.COMPILER: ["base-devel", "pkgconf"],
         Fix.OPENCV: ["opencv"],
+        Fix.ARM_TOOLCHAIN: ["arm-none-eabi-gcc", "arm-none-eabi-newlib"],
+        Fix.FLASHER: ["stlink"],
     },
 }
 
 CMAKE_PIP_SPEC = "cmake>=3.21"
+NINJA_PIP_SPEC = "ninja"
+_SYSTEM_FIXES = {Fix.COMPILER, Fix.OPENCV, Fix.ARM_TOOLCHAIN, Fix.FLASHER}
 
 
 @dataclass
@@ -64,19 +72,21 @@ def build_plan(fixes: set[Fix], cwd: Path) -> InstallPlan:
     description: list[str] = []
     manual: list[str] = []
 
-    if Fix.CMAKE in fixes:
-        # pip no venv do launcher: versao recente em qualquer distro, sem sudo
-        steps.append(Step("Instalar CMake (pip)", sys.executable,
-                          ["-m", "pip", "install", "--upgrade", CMAKE_PIP_SPEC], cwd))
-        description.append(f"pip install '{CMAKE_PIP_SPEC}' no venv do launcher (sem sudo)")
+    # pip no venv do launcher: versao recente em qualquer distro, sem sudo
+    pip_specs = [spec for fix, spec in ((Fix.CMAKE, CMAKE_PIP_SPEC), (Fix.NINJA, NINJA_PIP_SPEC)) if fix in fixes]
+    if pip_specs:
+        steps.append(Step("Instalar ferramentas (pip)", sys.executable,
+                          ["-m", "pip", "install", "--upgrade", *pip_specs], cwd))
+        description.append(f"pip install {' '.join(repr(s) for s in pip_specs)} no venv do launcher (sem sudo)")
 
-    system_fixes = fixes & {Fix.COMPILER, Fix.OPENCV}
+    system_fixes = fixes & _SYSTEM_FIXES
     if system_fixes:
         manager = package_manager()
         if IS_WINDOWS:
-            manual.append("Windows: instale o Visual Studio 2022 Build Tools e o OpenCV manualmente (ver README).")
+            manual.append("Windows: instale o Visual Studio 2022 Build Tools, o OpenCV e o STM32CubeIDE manualmente "
+                          "(ver README).")
         elif manager is None:
-            manual.append("Gerenciador de pacotes nao suportado (apt, dnf ou pacman). Instale compilador e OpenCV.")
+            manual.append("Gerenciador de pacotes nao suportado (apt, dnf ou pacman). Instale os pacotes manualmente.")
         else:
             packages = [pkg for fix in sorted(system_fixes, key=lambda f: f.value)
                         for pkg in _SYSTEM_PACKAGES[manager][fix]]

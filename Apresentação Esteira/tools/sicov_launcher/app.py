@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from . import __version__
 from .checks import CheckResult, LauncherConfig, Scope, blocking_failures, run_all
+from .firmware import append_tools_to_path, find_flasher
 from .installer import GALAXY_HINT, build_plan
 from .project import IS_WINDOWS, MODEL_FILENAME, ProjectLayout, list_serial_ports
 from .runner import Exchange, ExpectScript, LogKind, ProcessRunner, Step
@@ -35,6 +36,10 @@ _BRIDGE_PROMPT = "bridge >"
 _BRIDGE_OK = "Handshake Mútuo Concluído com Sucesso"
 _BRIDGE_FAIL = "Falha no Handshake"
 _BRIDGE_NOT_CONNECTED = "Placa não conectada"
+
+_FLASH_HINT = ("Gravação falhou. Confira: ST-Link no USB e ligado ao SWD da placa (SWDIO, SWCLK, GND); "
+               "placa alimentada; nenhuma sessão de debug do STM32CubeIDE aberta. No Linux, após instalar "
+               "o stlink-tools, desconecte e reconecte o ST-Link para aplicar as regras udev.")
 
 
 class _PathField(QWidget):
@@ -128,6 +133,10 @@ class MainWindow(QMainWindow):
             ("Rodar visão (VisionTest)", self.run_vision),
             ("Terminal da bridge", self.run_bridge_terminal),
         ])
+        firmware_box = self._button_group("5. Firmware STM32", [
+            ("Compilar firmware", self.build_firmware),
+            ("Gravar no STM32 (compila + grava)", self.flash_firmware),
+        ])
         test_box = self._button_group("4. Testes", [
             ("Testar handshake com o STM32", self.test_handshake),
             ("Fluxo completo (verificar → compilar → testar)", self.full_flow),
@@ -139,7 +148,7 @@ class MainWindow(QMainWindow):
 
         left = QWidget()
         left_layout = QVBoxLayout(left)
-        for widget in (config_box, env_box, build_box, run_box, test_box, self.stop_button):
+        for widget in (config_box, env_box, build_box, run_box, test_box, firmware_box, self.stop_button):
             left_layout.addWidget(widget)
         left_layout.addStretch(1)
         scroll = QScrollArea(widgetResizable=True)
@@ -423,6 +432,39 @@ class MainWindow(QMainWindow):
         if step:
             self.runner.run([step])
 
+    def _firmware_build_steps(self) -> list[Step]:
+        cwd = self.layout_.firmware_dir
+        return [
+            Step("Configurar firmware", "cmake", ["--preset", "firmware"], cwd),
+            Step("Compilar firmware", "cmake", ["--build", "--preset", "firmware"], cwd),
+        ]
+
+    def build_firmware(self) -> None:
+        if self._preflight({Scope.FIRMWARE}):
+            self.runner.run(self._firmware_build_steps())
+
+    def flash_firmware(self) -> None:
+        """Compila o firmware e grava pelo ST-Link (SWD); o STM32 reinicia ao final."""
+        if not self._preflight({Scope.FIRMWARE, Scope.FLASH}):
+            return
+        flasher = find_flasher()
+        assert flasher is not None  # garantido pelo preflight
+        answer = QMessageBox.question(
+            self, "Gravar firmware",
+            f"Compilar e gravar o firmware no STM32 usando {flasher.name}?\n\n"
+            "O programa atual da placa será substituído. Feche sessões de debug do "
+            "STM32CubeIDE antes de continuar.")
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        elf = self.layout_.firmware_artifact(".elf")
+        binary = self.layout_.firmware_artifact(".bin")
+        steps = self._firmware_build_steps()
+        steps.append(Step(f"Gravar no STM32 ({flasher.name})", str(flasher.program),
+                          flasher.command(elf, binary), self.layout_.firmware_dir,
+                          failure_hint=_FLASH_HINT))
+        self._append_log("Após gravar, o STM32 reinicia e envia 0xB1 (varredura liberada).", LogKind.INFO)
+        self.runner.run(steps)
+
     def full_flow(self) -> None:
         """Verifica, instala o que for automatizavel, compila tudo e testa o STM32."""
         self._save_settings()
@@ -473,6 +515,7 @@ def _prepend_venv_to_path() -> None:
 
 def main() -> int:
     _prepend_venv_to_path()
+    append_tools_to_path()  # ferramentas do STM32CubeIDE como reserva
     app = QApplication(sys.argv)
     app.setApplicationName("SICOV Launcher")
     window = MainWindow(ProjectLayout.detect())

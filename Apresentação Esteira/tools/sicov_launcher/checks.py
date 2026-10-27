@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
+from .firmware import find_arm_gcc, find_flasher, find_ninja
 from .project import IS_WINDOWS, ProjectLayout
 
 MIN_CMAKE = (3, 21)
@@ -23,6 +24,9 @@ class Fix(Enum):
     COMPILER = "compiler"     # compilador C++, make e pkg-config
     OPENCV = "opencv"         # pacote de desenvolvimento do OpenCV
     DIALOUT = "dialout"       # adiciona o usuario ao grupo dialout
+    ARM_TOOLCHAIN = "arm"     # arm-none-eabi-gcc + newlib (compilar o firmware)
+    NINJA = "ninja"           # gerador usado pelo preset do firmware (pip no venv)
+    FLASHER = "flasher"       # gravador do ST-Link (st-flash + regras udev)
 
 
 class Scope(Enum):
@@ -32,6 +36,8 @@ class Scope(Enum):
     VISION = "vision"   # compilar a visao
     MODEL = "model"     # rodar a visao (o modelo nao e necessario para compilar)
     SERIAL = "serial"   # falar com o STM32
+    FIRMWARE = "firmware"  # compilar o firmware do STM32
+    FLASH = "flash"        # gravar o firmware pelo ST-Link
 
 
 @dataclass
@@ -66,13 +72,13 @@ def check_cmake() -> CheckResult:
     if output is None:
         return CheckResult("CMake", False, "nao encontrado no PATH",
                            "Use 'Instalar dependencias' (instala via pip no venv do launcher)",
-                           {Scope.BRIDGE, Scope.VISION}, Fix.CMAKE)
+                           {Scope.BRIDGE, Scope.VISION, Scope.FIRMWARE}, Fix.CMAKE)
     match = re.search(r"(\d+)\.(\d+)", output)
     version = (int(match.group(1)), int(match.group(2))) if match else (0, 0)
     ok = version >= MIN_CMAKE
     return CheckResult("CMake", ok, output.splitlines()[0],
                        "" if ok else f"Necessario >= {MIN_CMAKE[0]}.{MIN_CMAKE[1]}; use 'Instalar dependencias'",
-                       {Scope.BRIDGE, Scope.VISION}, None if ok else Fix.CMAKE)
+                       {Scope.BRIDGE, Scope.VISION, Scope.FIRMWARE}, None if ok else Fix.CMAKE)
 
 
 def check_compiler() -> CheckResult:
@@ -171,6 +177,31 @@ def check_serial(cfg: LauncherConfig) -> list[CheckResult]:
     return results
 
 
+def check_arm_toolchain() -> CheckResult:
+    gcc = find_arm_gcc()
+    return CheckResult("Compilador ARM", gcc is not None,
+                       str(gcc) if gcc else "arm-none-eabi-gcc nao encontrado (PATH nem STM32CubeIDE)",
+                       "" if gcc else "Use 'Instalar dependencias' (gcc-arm-none-eabi)",
+                       {Scope.FIRMWARE}, None if gcc else Fix.ARM_TOOLCHAIN)
+
+
+def check_ninja() -> CheckResult:
+    ninja = find_ninja()
+    return CheckResult("Ninja", ninja is not None, str(ninja) if ninja else "nao encontrado",
+                       "" if ninja else "Use 'Instalar dependencias' (pip, sem sudo)",
+                       {Scope.FIRMWARE}, None if ninja else Fix.NINJA)
+
+
+def check_flasher() -> CheckResult:
+    flasher = find_flasher()
+    if flasher:
+        return CheckResult("Gravador ST-Link", True, f"{flasher.name}: {flasher.program}", scopes={Scope.FLASH})
+    hint = ("Instale o STM32CubeIDE ou o STM32CubeProgrammer" if IS_WINDOWS
+            else "Use 'Instalar dependencias' (stlink-tools) e reconecte o ST-Link")
+    return CheckResult("Gravador ST-Link", False, "STM32_Programmer_CLI, st-flash e openocd ausentes", hint,
+                       {Scope.FLASH}, None if IS_WINDOWS else Fix.FLASHER)
+
+
 def run_all(cfg: LauncherConfig, layout: ProjectLayout) -> list[CheckResult]:
     return [
         check_cmake(),
@@ -179,6 +210,9 @@ def run_all(cfg: LauncherConfig, layout: ProjectLayout) -> list[CheckResult]:
         check_galaxy(cfg),
         check_model(cfg, layout),
         *check_serial(cfg),
+        check_arm_toolchain(),
+        check_ninja(),
+        check_flasher(),
     ]
 
 
