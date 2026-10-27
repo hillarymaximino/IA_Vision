@@ -74,10 +74,10 @@ static constexpr int64_t dINTERVALO_RECONEXAO_MS = 2000;
 
 /* Em permil (1/1000) do frame, para funcionar em qualquer resolucao de camera.
  * Precisam ser 'int' simples e nao-const: o OpenCV escreve nelas via trackbar. */
-static int gRoiCx = 500;   /**< Centro X da ROI (500 = meio da largura).        */
-static int gRoiCy = 260;   /**< Centro Y da ROI (260 = 26% da altura).          */
-static int gRoiW  = 380;   /**< Largura da ROI (380 = 38% do frame).            */
-static int gRoiH  = 380;   /**< Altura da ROI (380 = 38% do frame).             */
+static int gRoiCx = 388;   /**< Centro X da ROI (500 = meio da largura).        */
+static int gRoiCy = 236;   /**< Centro Y da ROI (260 = 26% da altura).          */
+static int gRoiW  = 665;   /**< Largura da ROI (380 = 38% do frame).            */
+static int gRoiH  = 444;   /**< Altura da ROI (380 = 38% do frame).             */
 
 /** @brief Sinal global ativo enquanto um CIRCULO e reconhecido na ROI. */
 static std::atomic<bool> gSinalCirculo{false};

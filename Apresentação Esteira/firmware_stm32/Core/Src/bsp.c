@@ -21,7 +21,7 @@ extern TIM_HandleTypeDef htim4;
 
 /* Largura de pulso do servo em us (TIM4: tick de 1 us, periodo de 20 ms / 50 Hz) */
 #define SERVO_PULSE_REST_US     1950U   //Posição inicial / repouso (servo inativo, PD6 = 0)
-#define SERVO_PULSE_WORK_US     600U    //Posição de atuação na peça (servo ativo, PD6 = 1)
+#define SERVO_PULSE_WORK_US     650U    //Posição de atuação na peça (servo ativo, PD6 = 1)
 
 /* --- Variáveis Estáticas da Comunicação UART com o Host --- */
 static uint8_t rx_cmd_buffer[1];
