@@ -21,6 +21,7 @@
 #include <thread>
 #include <mutex>
 #include <atomic>
+#include <cstdint>
 #include <condition_variable>
 
 /*******************************************************************************
@@ -54,6 +55,9 @@ static struct
 
     std::atomic<bool> isRunning{false};
     std::thread visionThread;
+
+    /** Incrementada por Vision_Reset(); inferencia de geracao antiga nao e publicada. */
+    std::atomic<uint64_t> generation{0};
 } visionCtx;
 
 /*******************************************************************************
@@ -139,6 +143,21 @@ void Vision_GetOverlay(std::vector<DetectionResult>& outDetections)
 {
     std::lock_guard<std::mutex> lock(visionCtx.resultMutex);
     outDetections = visionCtx.results;
+}
+
+void Vision_Reset(void)
+{
+    // A geracao muda antes de limpar: uma inferencia em curso nao republica
+    // resultados antigos depois daqui (a checagem e feita sob resultMutex).
+    visionCtx.generation++;
+    {
+        std::lock_guard<std::mutex> lock(visionCtx.inputMutex);
+        visionCtx.hasNewFrame = false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(visionCtx.resultMutex);
+        visionCtx.results.clear();
+    }
 }
 
 /*******************************************************************************
@@ -231,6 +250,7 @@ static void VisionLoop(void)
     while (visionCtx.isRunning)
     {
         cv::Mat frame;
+        uint64_t frameGeneration = 0;
         {
             std::unique_lock<std::mutex> lock(visionCtx.inputMutex);
             visionCtx.inputCv.wait(lock, [] { return visionCtx.hasNewFrame || !visionCtx.isRunning; });
@@ -238,6 +258,7 @@ static void VisionLoop(void)
             if (!visionCtx.isRunning) break;
 
             frame = visionCtx.inputFrame.clone();
+            frameGeneration = visionCtx.generation.load();
             visionCtx.hasNewFrame = false;
         }
 
@@ -246,7 +267,11 @@ static void VisionLoop(void)
 
         {
             std::lock_guard<std::mutex> lock(visionCtx.resultMutex);
-            visionCtx.results = std::move(detections);
+            // Vision_Reset() durante a inferencia: o resultado e de antes da pausa
+            if (frameGeneration == visionCtx.generation.load())
+            {
+                visionCtx.results = std::move(detections);
+            }
         }
     }
 }

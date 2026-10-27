@@ -57,5 +57,13 @@ void Vision_SubmitFrame(const cv::Mat& frame);
 /** @brief Copia, de forma thread-safe, as deteccoes da ultima inferencia concluida. */
 void Vision_GetOverlay(std::vector<DetectionResult>& outDetections);
 
+/**
+ * @brief Descarta o quadro pendente, as deteccoes publicadas e o resultado de
+ *        qualquer inferencia em andamento.
+ * @note  Chamado quando a varredura e pausada ou retomada, para que nenhuma deteccao
+ *        de antes da pausa seja usada depois dela.
+ */
+void Vision_Reset(void);
+
 #endif /* VISION_MODULE_HPP */
 /** @} DOXYGEN GROUP TAG END OF FILE */

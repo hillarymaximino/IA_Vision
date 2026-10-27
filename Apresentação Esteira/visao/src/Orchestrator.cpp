@@ -153,6 +153,7 @@ void Orchestrator_Run(void)
     cv::Mat frame;
     std::vector<DetectionResult> detections;
     bool estadoAnteriorSinal = false;
+    bool varreduraAnterior = false;
 
     std::cout << "[ORCHESTRATOR] Pipeline ativo. 's' = salvar ROI | ESC = finalizar." << std::endl;
 
@@ -170,8 +171,21 @@ void Orchestrator_Run(void)
             cv::putText(frame, "ZONA DE INSPECAO", cv::Point(roi.x, std::max(15, roi.y - 10)),
                         cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 255), 1);
 
+            // Permissao do STM32: so com a esteira em movimento. Falso tambem se o STM32
+            // estiver desconectado ou sem enviar o estado ha mais de 2,5 s (fail-safe).
+            const bool varreduraAtiva = bridge::esta_varredura_ativa();
+
+            // Na troca de estado, descarta tudo o que a IA produziu antes: nenhuma
+            // deteccao de antes de uma pausa pode acionar o STM32 depois dela.
+            if (varreduraAtiva != varreduraAnterior)
+            {
+                Vision_Reset();
+                detections.clear();
+                varreduraAnterior = varreduraAtiva;
+            }
+
             // 2. Varredura pausada pelo STM32 (esteira parada / servo atuando)
-            if (!bridge::esta_varredura_ativa())
+            if (!varreduraAtiva)
             {
                 // Se o sinal estava ativo, devolve o pino foundObject para "sem objeto"
                 if (estadoAnteriorSinal)
@@ -182,7 +196,7 @@ void Orchestrator_Run(void)
                     gSinalCirculo = false;
                 }
 
-                cv::putText(frame, "PAUSADO PELO STM32 (AGUARDANDO 0xB1)", cv::Point(10, 30),
+                cv::putText(frame, "PAUSADO: ESTEIRA PARADA (AGUARDANDO 0xB1)", cv::Point(10, 30),
                             cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 165, 255), 2);
             }
             else
