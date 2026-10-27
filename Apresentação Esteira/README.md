@@ -46,10 +46,14 @@ flowchart LR
 
 **Ciclo de operação:**
 
-1. O STM32 liga e envia `0xB1`, liberando a varredura no PC.
-2. A esteira anda. Se o PC vê um círculo **inteiro** dentro da ROI, envia `0xA1`, e o STM32 coloca `PD7` em 0.
-3. A InovaLink lê `PD7 = 0`, para o motor e aciona o servo. Nesse momento o STM32 envia `0xB0` e o PC **pausa a detecção**.
-4. Quando o servo termina e o motor volta a girar, o STM32 envia `0xB1` e o PC volta a detectar.
+> **Regra de segurança:** a visão só detecta com a **esteira em movimento**, ou seja,
+> motor ligado e servo parado. Esteira parada, servo atuando, STM32 desconectado ou
+> STM32 sem mandar o estado há mais de 2,5 s significam **detecção pausada**.
+
+1. O STM32 liga e envia o **estado real**: `0xB0` se o motor estiver parado, `0xB1` se estiver girando. Depois disso, reenvia o estado a cada 1 s.
+2. A esteira anda (`0xB1`). Se o PC vê um círculo **inteiro** dentro da ROI, envia `0xA1`, e o STM32 coloca `PD7` em 0.
+3. A InovaLink lê `PD7 = 0`, para o motor e aciona o servo. Na hora em que o motor para, o STM32 envia `0xB0` e o PC **pausa a detecção**.
+4. Quando o servo termina e o motor volta a girar, o STM32 envia `0xB1` e o PC volta a detectar, descartando qualquer detecção de antes da pausa.
 5. Ao ser pausado, o PC também envia `0xA0`, que devolve `PD7` para 1 e prepara o próximo ciclo.
 
 ---
@@ -220,9 +224,9 @@ e usar o comando `s`.
 
 As trackbars ajustam a ROI ao vivo.
 
-> **Inicie o `VisionTest` antes de ligar ou resetar o STM32.** O firmware só envia
-> o `0xB1` inicial no boot (ver §10). Se o PC abrir depois, a tela fica em
-> `PAUSADO PELO STM32` até você apertar RESET na placa.
+> **Firmware ≥ 1.1.0 obrigatório.** A visão só fica liberada enquanto o STM32 reenvia
+> o estado a cada 1 s. Com o firmware antigo, que não reenvia, a tela volta para
+> `PAUSADO` 2,5 s depois de cada liberação. Grave o firmware pelo launcher (§5).
 
 Terminal de teste da bridge:
 
@@ -238,8 +242,8 @@ Terminal de teste da bridge:
 | :---: | :---: | :--- |
 | `0xA1` | PC → STM32 | Círculo na ROI. O STM32 coloca `PD7 = 0` |
 | `0xA0` | PC → STM32 | Sem objeto. O STM32 coloca `PD7 = 1` |
-| `0xB0` | STM32 → PC | Pausar a varredura (motor parado e servo ativo) |
-| `0xB1` | STM32 → PC | Liberar a varredura (boot, ou motor ativo e servo inativo) |
+| `0xB0` | STM32 → PC | Varredura **pausada**: motor parado **ou** servo ativo. Enviado na mudança de estado, no boot e reenviado a cada 1 s |
+| `0xB1` | STM32 → PC | Varredura **liberada**: motor ativo **e** servo inativo. Mesmo esquema de envio. O PC só considera liberado se o último `0xB1` tiver menos de 2,5 s |
 | `0x06` | ambos | ACK. O PC tenta até 3 vezes com timeout de 500 ms. O STM32 espera 50 ms |
 
 A pinagem completa e os detalhes dos timers estão em [`firmware_stm32/README.md`](firmware_stm32/README.md).
@@ -261,8 +265,11 @@ A pinagem completa e os detalhes dos timers estão em [`firmware_stm32/README.md
 - **Linux:** o código POSIX original foi mantido intacto, atrás de `#ifdef`.
 - **CMake:** a opção `BRIDGE_BUILD_EXAMPLES` fica desligada quando a bridge é usada como subdiretório. Também foram adicionados o alias `stm32_bridge::serial_lib` e os warnings `/W4` e `-Wall -Wextra`.
 - **`bridge_example`:** passa a ter UTF-8 e cores ANSI no console do Windows.
+- **Fail-safe da varredura (1.2.0):** `esta_varredura_ativa()` só retorna `true` com a conexão aberta e um `0xB1` recebido há menos de 2,5 s (watchdog). STM32 desconectado, travado ou sem energia significa varredura pausada. O log só registra mudanças de estado, e não cada reenvio.
 
 **Alterações no firmware:**
+- **Varredura segura (1.1.0):** a visão só é liberada com o motor ativo e o servo inativo. Antes, o `0xB0` só saía com o motor parado **e** o servo ativo, então a esteira simplesmente desligada continuava liberando a detecção. No boot também era enviado `0xB1` sem olhar o motor. Agora o firmware envia o estado real no boot, a cada mudança e a cada 1 s, e reenvia a cada 200 ms se o PC não confirmar com ACK.
+- **UART (1.1.0):** um comando do PC (`0xA1`/`0xA0`) que chega enquanto o STM32 espera um ACK passa a ser entregue à aplicação. Antes, ele era descartado.
 - **Servo:** começa e repousa em **1650 µs** e vai até **600 µs** quando a InovaLink aciona o servo (PD6 = 1). As constantes `SERVO_PULSE_REST_US` e `SERVO_PULSE_WORK_US` substituem `IDLE`/`ACTIVE`, que estavam com o sentido trocado em `BSP_StartServo`/`BSP_StopServo`.
 
 **Alterações na visão, em relação ao JDJDJD:**
@@ -270,6 +277,7 @@ A pinagem completa e os detalhes dos timers estão em [`firmware_stm32/README.md
 - **Quadro limpo para a IA:** agora a IA recebe o quadro **sem** o desenho da ROI. No JDJDJD, a moldura amarela era desenhada antes do `Vision_SubmitFrame`.
 - **CUDA:** a `VisionModule` verifica se a CUDA existe antes de usá-la. Sem isso, o log dizia "CUDA inicializado" mesmo rodando em CPU.
 - **Falha na conexão:** se o STM32 não conectar na inicialização, a câmera é liberada.
+- **Sem detecção antiga (2.2.0):** na pausa e na retomada, `Vision_Reset()` descarta o quadro pendente, as detecções publicadas e o resultado de inferências em andamento. Assim, nenhuma detecção de antes da pausa dispara `0xA1` depois dela.
 - **Limpeza:**
   - a função `ObterNomeForma`, que não era usada, foi removida;
   - o desenho de caixa duplicado virou `DesenharDeteccao()`;
@@ -287,13 +295,14 @@ A pinagem completa e os detalhes dos timers estão em [`firmware_stm32/README.md
 ## 10. Pendências conhecidas
 
 Estes pontos ficam documentados em vez de alterados, porque mudam o comportamento
-da esteira e precisam ser validados na bancada:
+da esteira e precisam ser validados na bancada.
 
-1. **`0xB1` só no boot.** A bridge começa com a varredura **pausada**. Se o PC conectar depois do boot do STM32, perde o `0xB1`. Duas correções possíveis: o firmware reenviar o estado periodicamente, ou responder a um comando de consulta.
-2. **A pausa depende do servo.** O STM32 só envia `0xB0` com o motor parado **e** o servo ativo, e só envia `0xB1` com o motor ativo **e** o servo inativo. A regra desejada é "motor ligado = pode detectar". Se a InovaLink parar o motor sem acionar o servo, a visão não pausa.
-3. **O firmware não bate com a documentação.** O README do firmware diz `PD0 = 0` para motor ativo e `PD5 = 1` para a direita, mas o `bsp.c` faz o contrário. Confirme com a InovaLink qual lado está certo.
-4. **Janela entre o `0xA1` e o `0xB0`.** Depois de enviar `0xA1`, o PC continua detectando até a InovaLink reagir.
-5. **Memória da bridge.** O `MessageBufferObserver` interno da bridge guarda todo byte recebido e nunca é esvaziado após a conexão. Como o volume é de poucos bytes por ciclo, não é crítico, mas deve ser limpo em uso contínuo.
+Os itens "`0xB1` só no boot" e "a pausa depende do servo" foram **resolvidos** no firmware 1.1.0
+e na bridge 1.2.0 (ver §9).
+
+1. **O firmware não bate com a documentação.** O README do firmware diz `PD0 = 0` para motor ativo e `PD5 = 1` para a direita, mas o `bsp.c` faz o contrário. Confirme com a InovaLink qual lado está certo.
+2. **Janela entre o `0xA1` e o `0xB0`.** Depois de enviar `0xA1`, o PC continua detectando até a InovaLink reagir.
+3. **Memória da bridge.** O `MessageBufferObserver` interno da bridge guarda todo byte recebido e nunca é esvaziado após a conexão. Como o volume é de poucos bytes por ciclo, não é crítico, mas deve ser limpo em uso contínuo.
 
 ---
 
@@ -304,7 +313,8 @@ da esteira e precisam ser validados na bancada:
 | `Nenhuma camera Daheng encontrada` | Câmera em outra sub-rede ou bloqueada pelo firewall | Use o *GxGigeIPConfig* para colocar câmera e placa de rede na mesma sub-rede e libere o app no firewall |
 | `Falha ao abrir porta serial: COMx` | Porta aberta em outro programa (CubeIDE, monitor serial) | Feche o terminal serial ou a sessão de debug do CubeIDE |
 | `Nenhum microcontrolador STM32 detectado` | ST-Link com outro PID ou adaptador USB-TTL | Passe `--port COMx` |
-| Tela parada em `PAUSADO PELO STM32` | O `0xB1` do boot chegou antes do PC conectar | Aperte RESET no STM32 com o `VisionTest` aberto |
+| Tela em `PAUSADO: ESTEIRA PARADA` com a esteira girando | Firmware antigo (< 1.1.0) sem reenvio do estado, ou motor desligado do ponto de vista do STM32 (PD0) | Grave o firmware pelo launcher e confira no `bridge_example` (comando `v`) se chega `0xB1` |
+| Visão detectando com a esteira parada | Firmware antigo (< 1.1.0) | Grave o firmware 1.1.0 ou mais novo. Ele pausa a visão sempre que o motor para |
 | `Timeout aguardando ACK` | Firmware não gravado, baud diferente ou VCP sem ligação com PA9/PA10 | Teste com o `bridge_example` e confira a ligação da USART1 com o ST-Link |
 | Build do firmware no CubeIDE falha com "No such file" | Caminho com espaço ou acento ("Apresentação Esteira") | Use o botão **Gravar no STM32** do launcher, que aceita esse caminho, ou copie `firmware_stm32/` para um caminho sem espaços |
 | `No debug probe detected` ao gravar | ST-Link desconectado, sem permissão USB ou ocupado | Reconecte o ST-Link, feche o debug do CubeIDE e, no Linux, reconecte depois de instalar o `stlink-tools` |

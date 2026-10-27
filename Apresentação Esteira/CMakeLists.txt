@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(SicovEsteira VERSION 1.1.0 LANGUAGES CXX)
+project(SicovEsteira VERSION 1.2.0 LANGUAGES CXX)
 
 # Projeto de topo da esteira SICOV: visao computacional (PC) + bridge serial STM32.
 # O firmware do STM32 (firmware_stm32/) e compilacao cruzada para ARM e tem projeto
