@@ -133,20 +133,16 @@ Em `firmware/Core/Src/bsp.c`, a lógica de controle e transições está pronta,
   - Interromper a geração de pulsos de passo: `HAL_TIM_PWM_Stop(&htim3, TIM_CHANNEL_1)`.
   - Desabilitar a ponte de potência: `HAL_GPIO_WritePin(enableMotorOut_GPIO_Port, enableMotorOut_Pin, GPIO_PIN_SET)`.
 
-### 6. `void BSP_InitServo(void)`
-- **Objetivo:** Configurar o timer PWM para acionamento do servomotor.
-- **O que deve fazer:**
-  - Configurar o Timer 4 (`htim4`) com base de tempo de 50 Hz (período total de 20 ms) e canal 1 no pino `PD12` (`ServoPwmPin`).
-  - Carregar a posição neutra/repouso no registrador de comparação (`htim4.Instance->CCR1`).
+### Servomotor (implementado)
 
-### 7. `void BSP_StartServo(void)`
-- **Objetivo:** Mover o servomotor para a posição de atuação / trabalho na peça.
-- **O que deve fazer:**
-  - Atualizar o registrador de captura e comparação do canal: `__HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, pulso_trabalho)` (largura de pulso típica de 1.8 ms a 2.0 ms).
-  - Iniciar o canal PWM: `HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_1)`.
+O TIM4 conta com tick de 1 µs (84 MHz / Prescaler 84) e período de 20 ms (50 Hz). Por isso,
+os pulsos em `bsp.c` são escritos diretamente em microssegundos:
 
-### 8. `void BSP_StopServo(void)`
-- **Objetivo:** Retornar o servomotor para a posição de repouso / inativa.
-- **O que deve fazer:**
-  - Atualizar o registrador para o pulso de repouso: `__HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, pulso_repouso)` (largura de pulso típica de 1.0 ms).
-  - Opcionalmente desativar o PWM com `HAL_TIM_PWM_Stop(&htim4, TIM_CHANNEL_1)` caso o servo não necessite manter torque estático na posição inativa.
+| Constante | Pulso | Quando |
+| :--- | :---: | :--- |
+| `SERVO_PULSE_REST_US` | **1650 µs** | Posição inicial (boot) e repouso: `BSP_InitServo()` / `BSP_StopServo()` (PD6 = 0) |
+| `SERVO_PULSE_WORK_US` | **600 µs** | Atuação na peça: `BSP_StartServo()` (PD6 = 1) |
+
+- `BSP_InitServo()`: carrega o pulso de repouso e inicia o PWM no `PD12` (TIM4_CH1).
+- `BSP_StartServo()`: move o servo de 1650 µs para 600 µs.
+- `BSP_StopServo()`: retorna o servo para 1650 µs. O PWM continua ativo para manter o torque na posição.

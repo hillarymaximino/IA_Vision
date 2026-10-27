@@ -16,11 +16,9 @@ extern TIM_HandleTypeDef htim4;
 
 #define DEBOUNCE_TIME_MS    10U
 
-#define SERVO_PULSE_MIN_US	500U 	//0º
-#define SERVO_PULSE_MAX_US	1700U	//180º
-
-#define SERVO_PULSE_IDLE_US     SERVO_PULSE_MIN_US 		//Posição de repouso
-#define SERVO_PULSE_ACTIVE_US   SERVO_PULSE_MAX_US		//Posição de varredura
+/* Largura de pulso do servo em us (TIM4: tick de 1 us, periodo de 20 ms / 50 Hz) */
+#define SERVO_PULSE_REST_US     1650U   //Posição inicial / repouso (servo inativo, PD6 = 0)
+#define SERVO_PULSE_WORK_US     600U    //Posição de atuação na peça (servo ativo, PD6 = 1)
 
 /* --- Variáveis Estáticas da Comunicação UART com o Host --- */
 static uint8_t rx_cmd_buffer[1];
@@ -368,26 +366,26 @@ void BSP_StartMotor(void)
  */
 void BSP_InitServo(void)
 {
-    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, SERVO_PULSE_IDLE_US);
+    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, SERVO_PULSE_REST_US);
     HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_1);
 }
 
 /**
- * @brief  Inicia ou retoma o funcionamento do servomotor (ativo).
+ * @brief  Move o servomotor para a posição de atuação (ativo, 600 us).
  * @retval None
  */
 void BSP_StartServo(void)
 {
-    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, SERVO_PULSE_IDLE_US);
+    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, SERVO_PULSE_WORK_US);
 }
 
 /**
- * @brief  Interrompe o funcionamento do servomotor (inativo).
+ * @brief  Retorna o servomotor para a posição de repouso (inativo, 1650 us).
  * @retval None
  */
 void BSP_StopServo(void)
 {
-    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, SERVO_PULSE_ACTIVE_US);
+    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, SERVO_PULSE_REST_US);
 }
 
 /* ==============================================================================

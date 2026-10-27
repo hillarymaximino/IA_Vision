@@ -192,7 +192,7 @@ A pinagem completa e os detalhes dos timers estão em [`firmware_stm32/README.md
 | :--- | :--- |
 | `visao/` | `IA_Vision`, versão de `src/JDJDJD.cpp` (Orchestrator com STM32) |
 | `bridge_host/` | [stm32-uart-host-bridge](https://github.com/EduardSilva774/stm32-uart-host-bridge) `host/` @ `5177b90` |
-| `firmware_stm32/` | mesmo repositório, `firmware/` @ `5177b90`, **sem alterações** |
+| `firmware_stm32/` | mesmo repositório, `firmware/` @ `5177b90` (alterado só o servo, ver abaixo) |
 
 **Alterações na bridge:**
 - **Backend Win32 em `SerialPort`:** usa `CreateFile`, `DCB`, `COMMTIMEOUTS` e I/O overlapped, o que permite ler e escrever ao mesmo tempo (o ACK sai da thread de RX).
@@ -201,6 +201,9 @@ A pinagem completa e os detalhes dos timers estão em [`firmware_stm32/README.md
 - **Linux:** o código POSIX original foi mantido intacto, atrás de `#ifdef`.
 - **CMake:** a opção `BRIDGE_BUILD_EXAMPLES` fica desligada quando a bridge é usada como subdiretório. Também foram adicionados o alias `stm32_bridge::serial_lib` e os warnings `/W4` e `-Wall -Wextra`.
 - **`bridge_example`:** passa a ter UTF-8 e cores ANSI no console do Windows.
+
+**Alterações no firmware:**
+- **Servo:** começa e repousa em **1650 µs** e vai até **600 µs** quando a InovaLink aciona o servo (PD6 = 1). As constantes `SERVO_PULSE_REST_US` e `SERVO_PULSE_WORK_US` substituem `IDLE`/`ACTIVE`, que estavam com o sentido trocado em `BSP_StartServo`/`BSP_StopServo`.
 
 **Alterações na visão, em relação ao JDJDJD:**
 - **Linha de comando:** `--model`, `--camera-sn` e `--port` substituem os valores fixos no código.
@@ -228,7 +231,7 @@ da esteira e precisam ser validados na bancada:
 
 1. **`0xB1` só no boot.** A bridge começa com a varredura **pausada**. Se o PC conectar depois do boot do STM32, perde o `0xB1`. Duas correções possíveis: o firmware reenviar o estado periodicamente, ou responder a um comando de consulta.
 2. **A pausa depende do servo.** O STM32 só envia `0xB0` com o motor parado **e** o servo ativo, e só envia `0xB1` com o motor ativo **e** o servo inativo. A regra desejada é "motor ligado = pode detectar". Se a InovaLink parar o motor sem acionar o servo, a visão não pausa.
-3. **O firmware não bate com a documentação.** O README do firmware diz `PD0 = 0` para motor ativo e `PD5 = 1` para a direita, mas o `bsp.c` faz o contrário. Além disso, `BSP_StartServo` aplica o pulso de "repouso" e `BSP_StopServo` o de "ativo". Confirme com a InovaLink qual lado está certo.
+3. **O firmware não bate com a documentação.** O README do firmware diz `PD0 = 0` para motor ativo e `PD5 = 1` para a direita, mas o `bsp.c` faz o contrário. Confirme com a InovaLink qual lado está certo.
 4. **Janela entre o `0xA1` e o `0xB0`.** Depois de enviar `0xA1`, o PC continua detectando até a InovaLink reagir.
 5. **Memória da bridge.** O `MessageBufferObserver` interno da bridge guarda todo byte recebido e nunca é esvaziado após a conexão. Como o volume é de poucos bytes por ciclo, não é crítico, mas deve ser limpo em uso contínuo.
 
