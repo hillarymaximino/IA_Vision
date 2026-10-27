@@ -185,7 +185,8 @@ public:
 
     bool isScanActive() const {
         std::lock_guard<std::mutex> lock(m_managerMutex);
-        if (m_observer) {
+        // Fail-safe: sem conexao valida (inclusive apos falha de escrita) nao ha permissao
+        if (m_connected && m_observer) {
             return m_observer->isScanActive();
         }
         return false;
@@ -214,7 +215,14 @@ public:
 
             // 1. Host envia o byte de comando para o STM32
             if (!m_client.send(payload)) {
-                std::cerr << "[Stm32Bridge] Falha ao transmitir byte pela serial." << std::endl;
+                // Escrita recusada pelo SO: o dispositivo USB caiu. Marca como desconectado
+                // para que a proxima chamada (ou a reconexao da visao) reabra a porta.
+                std::cerr << "[Stm32Bridge] Falha ao transmitir byte pela serial "
+                             "(ST-Link desconectado?). Tentando reconectar..." << std::endl;
+                m_connected = false;
+                if (!connectInternal(m_currentPort)) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                }
                 continue;
             }
 
@@ -245,60 +253,75 @@ private:
         disconnect();
     }
 
+    /**
+     * Conecta (ou reconecta) ao STM32. Ordem: porta informada / SERIAL_PORT; se ela
+     * nao abrir, busca automatica do ST-Link. Depois de uma queda do USB o ST-Link
+     * volta com outro nome (/dev/ttyACM0 -> /dev/ttyACM1), entao a busca automatica
+     * e o que permite reconectar sem intervencao.
+     */
     bool connectInternal(const std::string& customPort = "") {
         if (m_connected && m_observer && !m_observer->isClosed()) {
             return true;
         }
 
-        std::string targetPort;
-
-        // 1. Porta informada explicitamente
-        if (!customPort.empty()) {
-            targetPort = customPort;
-            std::cout << "[Stm32Bridge] Utilizando porta especificada: " << targetPort << std::endl;
-        } else {
-            // 2. Verifica se foi informada porta customizada via variável de ambiente
+        std::string requested = customPort;
+        if (requested.empty()) {
             const char* envPort = std::getenv("SERIAL_PORT");
             if (envPort && envPort[0] != '\0') {
-                targetPort = envPort;
-                std::cout << "[Stm32Bridge] Utilizando porta definida via SERIAL_PORT: " << targetPort << std::endl;
-            } else {
-                // 3. Procura ST-Link pelo VID/PID oficial STMicroelectronics (0483:374b)
-                auto stLink = serial::PortEnumerator::findByVidPid(kStLinkVid, kStLinkPid);
-                if (stLink) {
-                    targetPort = stLink->portPath;
-                    std::cout << "[Stm32Bridge] Dispositivo STM32 ST-Link localizado em: " 
-                              << targetPort << " (" << stLink->description << ")" << std::endl;
-                } else {
-                    // 4. Varre portas seriais buscando "STM32" ou "STLink" na descrição
-                    auto ports = serial::PortEnumerator::listPorts();
-                    for (const auto& p : ports) {
-                        if (p.description.find("STM32") != std::string::npos ||
-                            p.description.find("STLink") != std::string::npos ||
-                            p.vendorId == kStLinkVid) {
-                            targetPort = p.portPath;
-                            std::cout << "[Stm32Bridge] Dispositivo compatível localizado em: " 
-                                      << targetPort << " (" << p.description << ")" << std::endl;
-                            break;
-                        }
-                    }
-                }
+                requested = envPort;
             }
         }
 
-        if (targetPort.empty()) {
+        if (!requested.empty()) {
+            std::cout << "[Stm32Bridge] Utilizando porta especificada: " << requested << std::endl;
+            if (openPort(requested)) {
+                return true;
+            }
+            std::cout << "[Stm32Bridge] Porta especificada indisponivel (o ST-Link pode ter reconectado "
+                         "com outro nome). Procurando o STM32 automaticamente..." << std::endl;
+        }
+
+        const std::string found = findStLinkPort();
+        if (found.empty()) {
             std::cerr << "[Stm32Bridge] Nenhum microcontrolador STM32 detectado automaticamente." << std::endl;
             auto available = serial::PortEnumerator::listPorts();
             if (!available.empty()) {
                 std::cout << "[Stm32Bridge] Portas seriais encontradas no sistema:" << std::endl;
                 for (const auto& p : available) {
-                    std::cout << "  - " << p.portPath << " (VID: " << p.vendorId << ", PID: " << p.productId 
+                    std::cout << "  - " << p.portPath << " (VID: " << p.vendorId << ", PID: " << p.productId
                               << ", Desc: " << p.description << ")" << std::endl;
                 }
             }
             return false;
         }
+        if (found == requested) {
+            return false;   // ja tentada acima
+        }
+        return openPort(found);
+    }
 
+    /** Procura o ST-Link: VID/PID oficial (0483:374b) ou descricao/VID da STMicroelectronics. */
+    static std::string findStLinkPort() {
+        auto stLink = serial::PortEnumerator::findByVidPid(kStLinkVid, kStLinkPid);
+        if (stLink) {
+            std::cout << "[Stm32Bridge] Dispositivo STM32 ST-Link localizado em: "
+                      << stLink->portPath << " (" << stLink->description << ")" << std::endl;
+            return stLink->portPath;
+        }
+        for (const auto& p : serial::PortEnumerator::listPorts()) {
+            if (p.description.find("STM32") != std::string::npos ||
+                p.description.find("STLink") != std::string::npos ||
+                p.vendorId == kStLinkVid) {
+                std::cout << "[Stm32Bridge] Dispositivo compatível localizado em: "
+                          << p.portPath << " (" << p.description << ")" << std::endl;
+                return p.portPath;
+            }
+        }
+        return {};
+    }
+
+    /** Abre a porta e instala um observador novo (o anterior pode estar fechado). */
+    bool openPort(const std::string& targetPort) {
         std::cout << "[Stm32Bridge] Conectando a " << targetPort << " @ " << kBaudRate << " 8N1..." << std::endl;
         if (!m_client.connect(targetPort, kBaudRate)) {
             std::cerr << "[Stm32Bridge] Falha ao abrir porta serial: " << targetPort << std::endl;
