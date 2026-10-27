@@ -13,7 +13,7 @@ if(NOT CMAKE_TOOLCHAIN_FILE)
     set(CMAKE_TOOLCHAIN_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/arm-none-eabi.cmake")
 endif()
 
-project(comEdge VERSION 1.0.0 LANGUAGES C ASM)
+project(comEdge VERSION 1.1.0 LANGUAGES C ASM)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_EXTENSIONS ON)   # gnu11, como no CubeIDE

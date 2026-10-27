@@ -16,6 +16,9 @@ extern TIM_HandleTypeDef htim4;
 
 #define DEBOUNCE_TIME_MS    10U
 
+#define SCAN_RETRY_MS        200U   /* Reenvio do estado de varredura sem ACK do Host */
+#define SCAN_SYNC_PERIOD_MS  1000U  /* Reenvio periodico do estado ja confirmado      */
+
 /* Largura de pulso do servo em us (TIM4: tick de 1 us, periodo de 20 ms / 50 Hz) */
 #define SERVO_PULSE_REST_US     1650U   //Posição inicial / repouso (servo inativo, PD6 = 0)
 #define SERVO_PULSE_WORK_US     600U    //Posição de atuação na peça (servo ativo, PD6 = 1)
@@ -187,26 +190,36 @@ static void ProcessObjectDetection(void)
 }
 
 /**
- * @brief  Coordena o fluxo de varredura entre os atuadores da controladora e o Host.
- * @note   - Quando o motor para (!motor_is_active) e o servo ativa (servo_is_active),
- *           dispara o comando StopScan (0xB0) ao Host.
- *         - Quando o servo desativa (!servo_is_active) e o motor volta a rodar (motor_is_active),
- *           dispara o comando ResumeScan (0xB1) ao Host.
+ * @brief  Mantém o Host sincronizado com a permissão de varredura da visão.
+ * @note   Regra de segurança: a visão só pode detectar com a esteira em movimento,
+ *         ou seja, motor ativo E servo inativo. Qualquer outra combinação (esteira
+ *         desligada, servo atuando, boot sem motor) envia StopScan (0xB0).
+ *         - Mudança de estado: envia imediatamente.
+ *         - Sem ACK do Host: reenvia a cada SCAN_RETRY_MS.
+ *         - Estado confirmado: reenvia a cada SCAN_SYNC_PERIOD_MS, para que um Host
+ *           conectado depois do boot (ou que perdeu um byte) nunca fique dessincronizado.
  * @retval None
  */
 static void ProcessScanControl(void)
 {
-	static uint8_t is_scan_stopped = 0;
+	static int8_t   last_sent  = -1;   /* -1: nada enviado ainda (boot) */
+	static int8_t   last_acked = -1;
+	static uint32_t last_send_tick = 0;
 
-	if (!motor_is_active && servo_is_active && !is_scan_stopped)
+	const int8_t scan_allowed = (motor_is_active && !servo_is_active) ? 1 : 0;
+	const uint32_t elapsed = HAL_GetTick() - last_send_tick;
+
+	const uint8_t changed   = (scan_allowed != last_sent);
+	const uint8_t retry     = (scan_allowed != last_acked) && (elapsed >= SCAN_RETRY_MS);
+	const uint8_t heartbeat = (elapsed >= SCAN_SYNC_PERIOD_MS);
+
+	if (changed || retry || heartbeat)
 	{
-		is_scan_stopped = 1;
-		BSP_HostRequestStopScan();
-	}
-	else if (motor_is_active && !servo_is_active && is_scan_stopped)
-	{
-		is_scan_stopped = 0;
-		BSP_HostRequestResumeScan();
+		HAL_StatusTypeDef status = scan_allowed ? BSP_HostRequestResumeScan()
+		                                        : BSP_HostRequestStopScan();
+		last_sent = scan_allowed;
+		last_acked = (status == HAL_OK) ? scan_allowed : -1;
+		last_send_tick = HAL_GetTick();
 	}
 }
 
@@ -277,7 +290,8 @@ void BSP_InitAPP(void)
 
 	UART_Handler_StartReceive_IT(rx_cmd_buffer, 1U, UartRxCallback);
 
-	BSP_HostRequestScan();
+	/* Sem ResumeScan incondicional no boot: o primeiro ProcessScanControl() envia o
+	 * estado real (StopScan se a esteira estiver parada). */
 
 	while(1)
 	{

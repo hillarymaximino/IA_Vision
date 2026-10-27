@@ -71,14 +71,14 @@ O compilador `arm-none-eabi-gcc` é procurado no PATH. Para usar o que vem com o
 ### Loop Principal e Debounce Unificado (`bsp.c`)
 A execução da aplicação ocorre no laço da função `BSP_InitAPP()`:
 1. Coloca `foundObject` (`PD7`) em nível alto (`1` / sem objeto).
-2. Dispara `BSP_HostRequestScan()` transmitindo `0xB1` para avisar ao Host que o micro inicializou.
+2. Não libera a varredura no boot. O primeiro `ProcessScanControl()` envia o estado real (`0xB0` com a esteira parada).
 3. Entra no laço infinito executando sequencialmente:
    - `ProcessMotorEnable()`: Leitura do pino de habilitação do motor (`PD0`).
    - `ProcessMotorDirection()`: Leitura do sentido de giro do motor (`PD5`).
    - `ProcessMotorSpeed()`: Varredura dos pinos de velocidade (`PD1` a `PD4`).
    - `ProcessServoEnable()`: Leitura do sinal de comando do servo (`PD6`).
    - `ProcessObjectDetection()`: Atualização física do pino `PD7` conforme a flag serial.
-   - `ProcessScanControl()`: Máquina de transição que envia `StopScan` ou `ResumeScan`.
+   - `ProcessScanControl()`: Mantém o Host sincronizado com a permissão de varredura (`StopScan`/`ResumeScan`).
    - `ProcessUartHandshake()`: Despacho de confirmações ACK pendentes.
    - `HAL_Delay(DEBOUNCE_TIME_MS)`: **Debounce único centralizado de 10 ms** que filtra repiques mecânicos de todas as entradas simultaneamente sem busy-waiting desnecessário.
 
@@ -87,9 +87,11 @@ A execução da aplicação ocorre no laço da função `BSP_InitAPP()`:
   - Se `1` (Host enviou `0xA1`): seta `foundObject_Pin` (`PD7`) para `GPIO_PIN_RESET` (`0`).
   - Se `0` (Host enviou `0xA0`): seta `foundObject_Pin` (`PD7`) para `GPIO_PIN_SET` (`1`).
   - *Regra estrita:* Esse pino **só** é comutado por comando do Host.
-- **`ProcessScanControl()`:** Detecta transições coordenadas entre os estados do motor e do servo:
-  - Quando o motor para e o servo é ativado (`!motor_is_active && servo_is_active`): dispara `BSP_HostRequestStopScan()` (`0xB0`).
-  - Quando o servo desliga e o motor é religado (`motor_is_active && !servo_is_active`): dispara `BSP_HostRequestResumeScan()` (`0xB1`).
+- **`ProcessScanControl()`:** Aplica a regra de segurança: **a visão só detecta com a esteira em movimento**.
+  - Varredura liberada (`0xB1`) somente com `motor_is_active && !servo_is_active`. Qualquer outra combinação (esteira desligada, servo atuando, boot sem motor) envia `0xB0`.
+  - Envia na mudança de estado, no boot e reenvia a cada `SCAN_SYNC_PERIOD_MS` (1 s) como heartbeat. Assim, um Host conectado depois do boot, ou que perdeu um byte, nunca fica dessincronizado.
+  - Se o Host não confirmar com ACK, reenvia a cada `SCAN_RETRY_MS` (200 ms), e não a cada ciclo de 10 ms.
+  - Requer a bridge do host 1.2.0 ou mais nova, que usa o heartbeat como watchdog: sem `0xB1` há 2,5 s, a varredura fica pausada.
 
 ---
 

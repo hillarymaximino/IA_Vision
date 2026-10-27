@@ -251,8 +251,11 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
                 if (rx_byte_buffer == expected_ack_val)
                 {
                     ack_received_flag = 1;
+                    break;
                 }
-                break;
+                /* Outro byte durante a espera (ex: 0xA1 do Host cruzando com o nosso
+                 * 0xB0/0xB1): entrega à aplicação em vez de descartar o comando. */
+                /* fall through */
 
             case UART_HANDLER_STATE_RECEIVING_IT:
                 /* Acumula o dado no buffer mapeado da aplicação */
