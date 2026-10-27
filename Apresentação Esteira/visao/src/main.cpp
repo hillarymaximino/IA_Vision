@@ -42,6 +42,11 @@ static const char* const dDEFAULT_MODEL_PATH = "models/yolo11_formas.onnx";
 /** @brief Camera da esteira. Use "" para conectar na primeira camera encontrada. */
 static const char* const dDEFAULT_CAMERA_SN = "FBR26040067";
 
+/** @brief Versao do build (definida pelo CMake a partir de project(VERSION)). */
+#ifndef SICOV_VISAO_VERSION
+#define SICOV_VISAO_VERSION "desconhecida"
+#endif
+
 /*******************************************************************************
  * FUNCOES LOCAIS
  ******************************************************************************/
@@ -54,7 +59,8 @@ static void ImprimirUso(const char* programa)
               << "                      Use --camera-sn \"\" para a primeira camera encontrada.\n"
               << "  --port <porta>      Porta serial do STM32 (ex: COM5). Padrao: auto-deteccao\n"
               << "                      do ST-Link ou variavel de ambiente SERIAL_PORT.\n"
-              << "  -h, --help          Mostra esta ajuda.\n";
+              << "  -h, --help          Mostra esta ajuda.\n"
+              << "  --version           Mostra a versao e sai.\n";
 }
 
 /******************************************************************************/
@@ -71,6 +77,10 @@ int main(int argc, char* argv[])
     SetConsoleOutputCP(CP_UTF8);
 #endif
 
+    // Primeira linha do log: confirma na esteira qual build esta rodando
+    std::cout << "[SICOV] VisionTest " << SICOV_VISAO_VERSION
+              << " (compilado em " << __DATE__ << " " << __TIME__ << ")" << std::endl;
+
     std::string modelPath  = dDEFAULT_MODEL_PATH;
     std::string cameraSN   = dDEFAULT_CAMERA_SN;
     std::string serialPort;
@@ -84,6 +94,10 @@ int main(int argc, char* argv[])
         {
             ImprimirUso(argv[0]);
             return 0;
+        }
+        else if (arg == "--version")
+        {
+            return 0;   // a versao ja foi impressa na primeira linha
         }
         else if (arg == "--model" && temValor)     { modelPath  = argv[++i]; }
         else if (arg == "--camera-sn" && temValor) { cameraSN   = argv[++i]; }

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(VisionTest VERSION 2.5.0 LANGUAGES CXX)
+project(VisionTest VERSION 2.5.1 LANGUAGES CXX)
 
 # ------------------------------------------------------------------------------
 # Dependencias
@@ -48,6 +48,9 @@ add_executable(VisionTest
 target_compile_features(VisionTest PRIVATE cxx_std_17)
 target_include_directories(VisionTest PRIVATE inc ${GALAXY_INCLUDE_DIR})
 target_link_libraries(VisionTest PRIVATE ${OpenCV_LIBS} ${GALAXY_LIBRARY} serial_lib Threads::Threads)
+
+# Versao exibida ao iniciar: identifica no log qual build esta rodando na esteira
+target_compile_definitions(VisionTest PRIVATE SICOV_VISAO_VERSION="${PROJECT_VERSION}")
 
 if(WIN32)
     target_compile_definitions(VisionTest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
