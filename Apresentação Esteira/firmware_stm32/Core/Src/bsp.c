@@ -20,7 +20,7 @@ extern TIM_HandleTypeDef htim4;
 #define SCAN_SYNC_PERIOD_MS  1000U  /* Reenvio periodico do estado ja confirmado      */
 
 /* Largura de pulso do servo em us (TIM4: tick de 1 us, periodo de 20 ms / 50 Hz) */
-#define SERVO_PULSE_REST_US     1650U   //Posição inicial / repouso (servo inativo, PD6 = 0)
+#define SERVO_PULSE_REST_US     1950U   //Posição inicial / repouso (servo inativo, PD6 = 0)
 #define SERVO_PULSE_WORK_US     600U    //Posição de atuação na peça (servo ativo, PD6 = 1)
 
 /* --- Variáveis Estáticas da Comunicação UART com o Host --- */
